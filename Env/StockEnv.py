@@ -54,6 +54,7 @@ class Env():
         
         # 讀取除息日
         self.dividend = pd.read_csv(self.stock_folder + 'dividend.csv')
+        # TODO: handle if self.stock_targets not in self.dividend
         self.dividend = self.dividend[self.stock_targets].iloc[start_day_index - self.history_steps:start_day_index + self.steps].values
         
         # 讀取個股資料
@@ -70,7 +71,7 @@ class Env():
             assert start_day_index >= self.history_steps, '%d 缺少歷史交易資料' % self.stock_targets[i]
             tmp_trading_day = tmp['年月日'].iloc[idx-self.history_steps:idx+self.steps].values
             
-            # TODO: 如果期間有缺失交易資料，回傳錯誤
+            # 如果期間有缺失交易資料，回傳錯誤
             assert len(set(self.trading_day) - set(tmp_trading_day)) == 0,'%d 缺少交易資料' % self.stock_targets[i]
             
             self.open[i] = tmp.iloc[idx-self.history_steps:idx+self.steps, 1].values[None]
@@ -150,8 +151,7 @@ class Env():
         # 重新抓 cond_buy
         cond_buy = (order_result > 0)
         
-        # 只有買進時會累加交易成本
-        # TODO: 買進 queue, 修正 profit 算法
+        # 買進時會累加交易成本
         self.avr_cost[cond_buy] = (self.avr_cost[cond_buy]*self.position[cond_buy]+self.open[time_index][cond_buy]*order_result[cond_buy])/((self.position+order_result)[cond_buy])
         
         cost = 0
