@@ -81,6 +81,7 @@ class BaseEnv():
                 option_actions.append(action[1:])
         
         # stock
+        self.env_stock.cash = self.cash
         print('ENV_STOCK STEP:', stock_actions)
         price, cash, unrealized, profit, avr_cost, order, order_result, position = self.env_stock.step(stock_actions)
         print('target:', self.stock_targets)
@@ -88,22 +89,35 @@ class BaseEnv():
         print('order:', order, order_result)
         print('positon:', position)
         
-        print('%s\t%s\t%s' % ('cash', 'unrealized', 'profit'))
-        print('%d\t%d\t%d' % (cash, unrealized, profit))
+        print('%s\t%s\t%s' % ('cash', 'profit', 'unrealized'))
+        print('%d\t%d\t%d' % (cash, profit, unrealized))
+        print()
+        
+        self.cash = cash
+        self.env_futures.cash = self.cash
         
         # future
         print('ENV_TX STEP:', futures_actions)
         trading_day = self.env_stock.trading_day
         date = pd.to_datetime(trading_day[self.history_steps + self.counter]).date()
         cash_tx, profit_tx, cost, position, unrealize, more_money = self.env_futures.step(futures_actions, date)
-        print('%s\t%s\t%s\t%s\t%s' % ('cash', 'profit', 'cost', 'unrealized', 'margin'))
-        print('%d\t%d\t%d\t%d\t\t%d' % (cash_tx, profit_tx, cost, unrealize, more_money))
+        print('%s\t%s\t%s\t%s\t%s' % ('cash', 'profit', 'cost', 'margin', 'unrealized'))
+        print('%d\t%d\t%d\t%d\t%d' % (cash_tx, profit_tx, cost, more_money, unrealize))
         print()
+        
+        self.cash = cash_tx
+        self.env_option.cash = self.cash
         
         # option
         print('ENV_TXO STEP:', option_actions)
-        cash, profit, premium, position, unrealized = self.env_option.step(option_actions, date)
-        print(cash, profit, premium, position, unrealized)
+        cash_o, profit, position, unrealized = self.env_option.step(option_actions, date)
+        print('%s\t%s\t%s' % ('cash', 'profit', 'unrealized'))
+        print('%d\t%d\t%d' % (cash_o, profit, unrealized))
+        print()
+        print('================')
+        print()
+        
+        self.cash = cash_o
         
         self.counter += 1
         
@@ -115,7 +129,7 @@ if __name__ == '__main__':
     option_folder = './option_data/'
     base_env = BaseEnv(stock_folder, futures_folder, option_folder)
     
-    cash = int(1e+6)
+    cash = int(3e+6)
     start_date = '2016/01/19'
     steps = 4
     history_steps = 5
@@ -138,10 +152,10 @@ if __name__ == '__main__':
              # action 0
              [['s', '1101', 1], ['s', '2330', 10],
               ['f', 'TX01',1], ['f', 'TX02',1], ['f', 'MTX01',1],
-              ['o', 'TXO01_C', 1, 8500], ['o', 'TXO02_C', -2, 8200], ['o', 'TXO01_P', -1, 9300]],
+              ['o', 'TXO01_C', 1, 7900], ['o', 'TXO02_C', -2, 7900], ['o', 'TXO01_P', -1, 7700]],
              # action 1
              [['s', '1301', 1], ['s', '2330', 2],
-              ['f', 'TX01',-1], ['f', 'TX02',-1],
+              ['f', 'TX01',-1], ['f', 'TX02',-3],
               ['o', 'TXO02_P', 2, 8700], ['o', 'TXO01_C', 2, 7900], ['o', 'TXO01_P', 1, 8500]],
              # action 2
              [['s', '1301', 3], ['s', '2330', -1],
@@ -149,7 +163,7 @@ if __name__ == '__main__':
               ['o', 'TXO01_C', 1, 9200], ['o', 'TXO02_C', -1, 9200]],
              # action 3
              [['s', '1101', 5], ['s', '1301', -20],
-              ['o', 'TXO01_P', -1, 8900]]
+              ['o', 'TXO01_P', -1, 7700]]
             ]
 
     

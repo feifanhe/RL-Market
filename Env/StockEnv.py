@@ -92,8 +92,6 @@ class Env():
         
     def step(self, action):
         time_index = self.cnt + self.history_steps
-        print(self.trading_day[time_index])
-        print(action)
         order = np.zeros(self.stock_targets_count, dtype=int)
         for code, amount in action:
             order[self.stock_targets_idx[code]] = amount

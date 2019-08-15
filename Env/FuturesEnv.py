@@ -52,7 +52,6 @@ class Env:
         b_money = abs_buy_num*o_margin
         min_money = b_money + self.o_acct
         
-        
         if self.pool< min_money:  # pool裡的錢不夠付保證金  
             dif = min_money - self.pool #dif是當pool中還差多少就到原始保證金，dif一定會>0 若<0就不會進到這
             if dif <= self.cash : #若環境夠付
@@ -73,7 +72,7 @@ class Env:
 
         #算買的cost
         c_point = self.data[(self.data['Date']==date) & (self.data['contract_rank']==due_mon) & (self.data['Symbol']==tx_type)]['Open'].iloc[0]
-        cost = cost + o_margin*buy_num*is_pos
+        cost = o_margin*buy_num*is_pos
         #存到own中
         s1 = pd.Series({'type':tx_type, 'due_mon':due_mon,'buy_point':c_point, 'volumn':buy_num, 'per_price':per_mon})
         self.own = self.own.append(s1, ignore_index=True)
@@ -86,7 +85,7 @@ class Env:
         self.own = self.own[self.own['volumn']!=0]
         self.own = self.own.reset_index(drop=True)
         
-        return cost,position
+        return cost, position
                     
     #%%    
     def sell(self,date,buy_num,act_type,o_margin,m_margin,tx_type,due_mon,per_mon):
@@ -283,7 +282,8 @@ class Env:
             profit = int(profit)
             cost = int(cost)
             unrealize = int(unrealize)
-       
+                
+            self.cash += profit - cost
         
         return self.cash, profit, cost, position, unrealize, more_money
 #%%    
