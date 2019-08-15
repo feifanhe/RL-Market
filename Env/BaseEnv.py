@@ -80,18 +80,18 @@ class BaseEnv():
             if action[0] == 'o':
                 option_actions.append(action[1:])
         
-        # stock
         self.env_stock.cash = self.cash
+        
+        # stock
         print('ENV_STOCK STEP:', stock_actions)
         price, cash, unrealized, profit, avr_cost, order, order_result, position = self.env_stock.step(stock_actions)
         print('target:', self.stock_targets)
         print('avr_cost:', avr_cost)
-        print('order:', order, order_result)
+        print('order:', order, '->', order_result)
         print('positon:', position)
         
         print('%s\t%s\t%s' % ('cash', 'profit', 'unrealized'))
-        print('%d\t%d\t%d' % (cash, profit, unrealized))
-        print()
+        print('%d\t%d\t%d\n' % (cash, profit, unrealized))
         
         self.cash = cash
         self.env_futures.cash = self.cash
@@ -100,10 +100,10 @@ class BaseEnv():
         print('ENV_TX STEP:', futures_actions)
         trading_day = self.env_stock.trading_day
         date = pd.to_datetime(trading_day[self.history_steps + self.counter]).date()
-        cash_tx, profit_tx, cost, position, unrealize, more_money = self.env_futures.step(futures_actions, date)
-        print('%s\t%s\t%s\t%s\t%s' % ('cash', 'profit', 'cost', 'margin', 'unrealized'))
-        print('%d\t%d\t%d\t%d\t%d' % (cash_tx, profit_tx, cost, more_money, unrealize))
-        print()
+        own, cash_tx, profit_tx, cost, position, unrealize, more_money, pool = self.env_futures.step(futures_actions, date)
+        print(own)
+        print('%s\t%s\t%s\t%s\t%s\t%s' % ('cash', 'profit', 'cost', 'pool', 'margin', 'unrealized'))
+        print('%d\t%d\t%d\t%d\t%d\t%d\n' % (cash_tx, profit_tx, cost, pool, more_money, unrealize))
         
         self.cash = cash_tx
         self.env_option.cash = self.cash
@@ -113,9 +113,7 @@ class BaseEnv():
         cash_o, profit, position, unrealized = self.env_option.step(option_actions, date)
         print('%s\t%s\t%s' % ('cash', 'profit', 'unrealized'))
         print('%d\t%d\t%d' % (cash_o, profit, unrealized))
-        print()
-        print('================')
-        print()
+        print('\n================\n')
         
         self.cash = cash_o
         
@@ -171,6 +169,5 @@ if __name__ == '__main__':
         if base_env.done:
                 break
         
-        print('[step %d]' % (i + 1))
-        print()
+        print('[step %d]\n' % (i + 1), actions[i], '\n')
         base_env.step(actions[i])

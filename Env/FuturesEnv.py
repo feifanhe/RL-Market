@@ -283,9 +283,7 @@ class Env:
             cost = int(cost)
             unrealize = int(unrealize)
                 
-            self.cash += profit - cost
-        
-        return self.cash, profit, cost, position, unrealize, more_money
+        return self.own, self.cash, profit, cost, position, unrealize, more_money, self.pool
 #%%    
     #追繳保證金
     def margin_call(self,more_money,date):
