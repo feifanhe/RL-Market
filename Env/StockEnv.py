@@ -49,13 +49,15 @@ class Env():
         assert len(start_day_row) > 0, '起始日無交易'
         start_day_index = start_day_row.index[0]
         assert start_day_index >= self.history_steps, '交易日資料不足'
-        
-        self.trading_day = taiwan_index['年月日'].iloc[start_day_index - self.history_steps:start_day_index + self.steps].values
+        start_index = start_day_index - self.history_steps
+        end_index = start_day_index + self.steps
+        self.trading_day = taiwan_index['年月日'].iloc[start_index:end_index].values
         
         # 讀取除息日
-        self.dividend = pd.read_csv(self.stock_folder + 'dividend.csv')
-        # TODO: handle if self.stock_targets not in self.dividend
-        self.dividend = self.dividend[self.stock_targets].iloc[start_day_index - self.history_steps:start_day_index + self.steps].values
+        dividend = pd.read_csv(self.stock_folder + 'dividend.csv')
+        self.target_dividend = pd.DataFrame(index=self.trading_day, columns=self.stock_targets).fillna(0)
+        self.target_dividend[dividend.columns & self.stock_targets] = \
+            dividend[dividend.columns & self.stock_targets].iloc[start_index:end_index].values
         
         # 讀取個股資料
         self.open = np.empty(self.stock_targets_count, dtype = object)
@@ -67,18 +69,23 @@ class Env():
                     self.start_date.split('/')[0] + # 年
                     '.xlsx', index_col = 0).reset_index(inplace=False)
             del tmp['index']
-            idx = tmp.loc[tmp['年月日'] == self.start_date].index[0]
+            tmp['Date'] = pd.to_datetime(tmp['Date'], format='%Y%m%d')
+            self.tmp = tmp
+            idx = tmp.loc[tmp['Date'] == self.start_date].index[0]
+            start_idx = idx - self.history_steps
+            end_idx = idx + self.steps
             assert start_day_index >= self.history_steps, '%d 缺少歷史交易資料' % self.stock_targets[i]
-            tmp_trading_day = tmp['年月日'].iloc[idx-self.history_steps:idx+self.steps].values
+            tmp_trading_day = tmp['Date'].iloc[start_idx:end_idx].values
             
             # 如果期間有缺失交易資料，回傳錯誤
             assert len(set(self.trading_day) - set(tmp_trading_day)) == 0,'%d 缺少交易資料' % self.stock_targets[i]
-            
-            self.open[i] = tmp.iloc[idx-self.history_steps:idx+self.steps, 1].values[None]
-            self.close[i] = tmp.iloc[idx-self.history_steps:idx+self.steps, 4].values[None]
+
+            self.open[i] = tmp['Open'].iloc[start_idx:end_idx].values
+            self.close[i] = tmp['Close'].iloc[start_idx:end_idx].values
         
-        self.open = np.concatenate(self.open).T
-        self.close = np.concatenate(self.close).T
+        self.open = np.stack(self.open).T
+        self.close = np.stack(self.close).T
+
         self.stock_targets_idx = {j:i for i,j in enumerate(self.stock_targets)}
         
         return (self.close[self.cnt:self.cnt+self.history_steps], # 歷史收盤價
@@ -97,19 +104,19 @@ class Env():
         for code, amount in action:
             order[self.stock_targets_idx[code]] = amount
 
-        order_result = copy.deepcopy(order)
+        order_deal = order.copy()
 
         # 賣超過手中持有部位，action強制轉換成可賣出的上限
-        cond_over_sell = ((self.position + order_result) < 0)
-        order_result[cond_over_sell] = -1 * self.position[cond_over_sell]
+        cond_over_sell = ((self.position + order) < 0)
+        order_deal[cond_over_sell] = -1 * self.position[cond_over_sell]
 
         # 賣出
-        cond_sell = (order_result < 0)  
+        cond_sell = (order_deal < 0)  
         
         # 賣出時會計算 profit
         income = 0
         for i in np.where(cond_sell)[0]:
-            i_income = int(self.open[time_index][i] * -1 * order_result[i] * 1000)
+            i_income = int(self.open[time_index][i] * -1 * order_deal[i] * 1000)
             i_income -= self.fee(i_income)
             income += i_income
         income -= int(income * 0.003)
@@ -118,7 +125,7 @@ class Env():
         cost = 0
         for i in np.where(cond_sell)[0]:
             i_cost = 0
-            for j in range(order_result[i], 0):
+            for j in range(order_deal[i], 0):
                 assert len(self.cost_queue[i]) > 0
                 i_cost += int(self.cost_queue[i].popleft() * 1000)
             i_cost += self.fee(i_cost)
@@ -128,48 +135,51 @@ class Env():
         self.cash += int(income)
         
         # 修正持有部位和平均成本
-        self.position[cond_sell] += order_result[cond_sell]
+        self.position[cond_sell] += order_deal[cond_sell]
         self.avr_cost[((self.position)==0)] = 0
         
         # 買入
-        cond_buy = (order_result > 0) 
-        
+        cond_buy = (order_deal > 0) 
+
         # 檢查現金是否足夠
-        cost = np.sum(self.open[time_index][cond_buy] * order_result[cond_buy] * 1000)
+        cost = np.sum(self.open[time_index, cond_buy] * order_deal[cond_buy] * 1000)
         cost += self.fee(cost)
         if self.cash < cost:
-            # 修改 order_result[cond_buy]
+            # 修改 order_deal[cond_buy]
             tmp_cash = self.cash
             for i in np.where(cond_buy)[0]:
                 i_cost = self.open[time_index][i] * 1000
                 i_cost += self.fee(i_cost)
-                if (tmp_cash / i_cost) < order_result[i]:
+                if (tmp_cash / i_cost) < order_deal[i]:
                     # 現金不足，計算最大可買張數
-                    order_result[i] = int(tmp_cash / i_cost)
-                tmp_cash -= order_result[i] * i_cost
+                    order_deal[i] = int(tmp_cash / i_cost)
+                tmp_cash -= order_deal[i] * i_cost
         
         # 重新抓 cond_buy
-        cond_buy = (order_result > 0)
+        cond_buy = (order_deal > 0)
         
         # 買進時會累加交易成本
-        self.avr_cost[cond_buy] = (self.avr_cost[cond_buy]*self.position[cond_buy]+self.open[time_index][cond_buy]*order_result[cond_buy])/((self.position+order_result)[cond_buy])
+        self.avr_cost[cond_buy] = ((self.avr_cost * self.position +
+                                   self.open[time_index] * order_deal)[cond_buy]
+                                  / (self.position + order_deal)[cond_buy])
         
         cost = 0
         # append to cost queue
         for i in np.where(cond_buy)[0]:
             i_cost = 0
-            for j in range(order_result[i]):
+            for j in range(order_deal[i]):
                 self.cost_queue[i].append(self.open[time_index][i])
                 i_cost += int(self.open[time_index][i] * 1000)
             i_cost += self.fee(i_cost)
             cost += i_cost
         self.cash -= cost
-        self.position[cond_buy] += order_result[cond_buy]
+        
+        self.position[cond_buy] += order_deal[cond_buy]
         
         unrealized = int(np.sum((self.close[time_index] - self.avr_cost) * self.position * 1000))
         
         # 計算配息
-        profit_dividend = np.sum(self.dividend[time_index] * self.position * 1000)
+        profit_dividend = np.sum(self.target_dividend.iloc[time_index] * self.position * 1000)
         profit += profit_dividend
         
         self.cnt += 1
@@ -182,7 +192,7 @@ class Env():
                 profit, # 損益
                 self.avr_cost, # 平均成本
                 order, # 原交易單
-                order_result, # 實際交易單
+                order_deal, # 實際交易單
                 self.position # 持有部位
                )
         
@@ -204,7 +214,8 @@ if __name__ == '__main__':
     start_date = '2016/01/25'
     steps = 10
     history_steps = 5
-    targets = ['1101', '1301', '2330']
+    #targets = ['1101', '1301', '2330']
+    targets = ['1101', '1102']
     env.reset(
             cash,
             start_date,
@@ -212,6 +223,19 @@ if __name__ == '__main__':
             history_steps,
             targets)
     
+    actions = [
+             [['1102', 1]],
+             [['1102', 0],['1101', 1]],
+             [['1102', 1]],
+             [],
+             [['1102', -2]],
+             [['1101', -1]],
+             [],
+             [],
+             [],
+             [],
+            ]   
+    """
     actions = [
              [['1101', 1], ['2330', 10]],
              [['1301', 1], ['2330', 2]],
@@ -224,16 +248,17 @@ if __name__ == '__main__':
              [],
              [],
             ]
+    """
     
     for i in range(steps):
         print('[step %d]' % (i + 1))
         print()
-        price, cash, unrealized, profit, avr_cost, order, order_result, position = env.step(actions[i])
+        price, cash, unrealized, profit, avr_cost, order, order_deal, position = env.step(actions[i])
         print('target:', targets)
         print('avr_cost:', avr_cost)
-        print('order:', order, order_result)
+        print('order:', order, order_deal)
         print('positon:', position)
         
-        print('%s\t%s\t%s' % ('cash', 'unrealized', 'profit'))
-        print('%d\t%d\t%d' % (cash, unrealized, profit))
+        print('%s\t%s\t%s' % ('cash', 'profit', 'unrealized'))
+        print('%d\t%d\t%d' % (cash, profit, unrealized))
         print()
