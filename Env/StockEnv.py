@@ -32,9 +32,9 @@ class Env():
         assert len(start_date_row) > 0, '起始日無交易'
         start_date_index = start_date_row.index[0]
         assert start_date_index >= self.history_steps, '交易日資料不足'
-        self.head_date_index = start_date_index - self.history_steps
-        self.end_date_index = start_date_index + self.steps
-        self.trading_day = pd.DatetimeIndex(df['年月日'].iloc[self.head_date_index:self.end_date_index])
+        head_date_index = start_date_index - self.history_steps
+        end_date_index = start_date_index + self.steps
+        self.trading_day = pd.DatetimeIndex(df['年月日'].iloc[head_date_index:end_date_index])
         
     # 讀取個股資料
     def load_target_price(self):
@@ -84,8 +84,7 @@ class Env():
                 columns=self.stock_targets)
         
         # update table with dividend data from intersection of data cloumns and stock targets
-        self.dividend[df.columns & self.stock_targets] = \
-            df[self.trading_day, df.columns & self.stock_targets]
+        self.dividend[df.columns & self.stock_targets] = df[df.columns & self.stock_targets]
             
     def reset(
             self,
@@ -110,7 +109,6 @@ class Env():
         self.load_trading_day()
         self.load_target_price()
         self.load_target_dividend()
-        
         
         self.stock_targets_idx = {j:i for i,j in enumerate(self.stock_targets)}
         
