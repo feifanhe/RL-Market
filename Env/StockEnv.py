@@ -2,10 +2,9 @@
 """
 Created on Wed Aug  7 15:50:19 2019
 
-@author: Kuo
+@author: feifanhe
 """
 #%%
-import copy
 import pandas as pd
 import numpy as np
 from collections import deque
