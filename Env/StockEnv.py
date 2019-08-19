@@ -102,7 +102,6 @@ class Env():
         self.stock_targets = stock_targets
         self.stock_targets_count = len(stock_targets)
         self.position = np.zeros(self.stock_targets_count, dtype = int)
-        self.avg_cost = np.zeros(self.stock_targets_count)
         self.cost_queue = [deque([]) for _ in range(self.stock_targets_count)]
         
         self.load_trading_day()
@@ -112,13 +111,7 @@ class Env():
         self.stock_targets_idx = {j:i for i, j in enumerate(self.stock_targets)}
         
         return (self.close[:self.history_steps], # 歷史收盤價
-                self.cash, # 剩餘現金
-                0, # 未實現資產市值
-                0, # 損益
-                self.avg_cost, # 平均成本
-                np.zeros(self.stock_targets_count), # 委託
-                np.zeros(self.stock_targets_count), # 成交
-                self.position)
+                self.cash)
         
     def get_fee(self, price):
         if not self.enable_fee:
@@ -162,7 +155,6 @@ class Env():
         
         # 修正持有部位和平均成本
         self.position[cond_sell] += order[cond_sell]
-        self.avg_cost[(self.position) == 0] = 0
         
         return total_income, profit
     
@@ -187,13 +179,8 @@ class Env():
         self.__buy_check(order, open_price)
         
         cond_buy = (order > 0)
-        
-        # 買進時會累加交易成本
-        self.avg_cost[cond_buy] = (
-                (self.avg_cost * self.position + open_price * order)[cond_buy]
-                / (self.position + order)[cond_buy])
-        
         total_cost = 0
+        
         # append to cost queue
         for i in np.where(cond_buy)[0]:
             cost = 0
@@ -224,8 +211,16 @@ class Env():
         cost = self.__buy(order_deal, self.open[date_index])
         self.cash -= cost
         
+        # average cost
+        avg_cost = np.zeros(self.stock_targets_count, dtype = float)
+        for i in range(self.stock_targets_count):
+            if self.position[i] == 0:
+                avg_cost[i] = 0
+                continue
+            avg_cost[i] = sum(self.cost_queue[i]) / self.position[i]
+            
         # 未實現損益
-        unrealized = int(np.sum((self.close[date_index] - self.avg_cost) * self.position * 1000))
+        unrealized = int(np.sum((self.close[date_index] - avg_cost) * self.position * 1000))
         
         # 計算配息
         profit_dividend = np.sum(self.dividend.iloc[date_index] * self.position * 1000)
@@ -239,7 +234,7 @@ class Env():
                 self.cash, # 剩餘現金
                 unrealized, # 未實現資產市值
                 profit, # 損益
-                self.avg_cost, # 平均成本
+                avg_cost, # 平均成本
                 order, # 委託
                 order_deal, # 成交
                 self.position)
