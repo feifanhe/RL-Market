@@ -11,10 +11,10 @@ from collections import deque
 
 #%%
 class Env():
-    def __init__(self,
-                  stock_folder, #股票所在資料夾
-                  ):
-
+    def __init__(
+            self,
+            stock_folder):
+        
         # Env parameter initial
         self.stock_folder = stock_folder
         self.enable_fee = False
