@@ -248,7 +248,7 @@ class Env():
         if self.cnt == self.steps:
             self.done = True
         
-        return (self.close[self.cnt:date_index], # 歷史收盤價
+        return (self.close[self.cnt:date_index + 1], # 歷史收盤價
                 self.cash, # 剩餘現金
                 unrealized, # 未實現資產市值
                 profit, # 損益
@@ -266,7 +266,7 @@ if __name__ == '__main__':
     history_steps = 5
     targets = ['1101', '1102']
     
-    env.reset(
+    price, cash = env.reset(
             cash,
             start_date,
             steps,
