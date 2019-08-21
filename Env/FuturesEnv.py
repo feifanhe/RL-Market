@@ -9,15 +9,16 @@ import numpy as np
 from collections import deque
 
 class Env:
+    # Constants
+    CONTRACT = ['TX01', 'TX02', 'MTX01', 'MTX02']
+    CONTRACT_IDX = {j:i for i, j in enumerate(CONTRACT)}
+    CONTRACT_COUNT = len(CONTRACT)
+    CONTRACT_SIZE = np.array([200, 200, 50, 50], dtype = int)
+    
     def __init__(self, futures_folder):
         # Env parameter initial
         self.futures_folder = futures_folder
-        self.target_idx = {j:i for i, j in enumerate(self.TARGET)}
         
-    # Constants
-    TARGET = ['TX01', 'TX02', 'MTX01', 'MTX02']
-    TARGET_COUNT = len(TARGET)
-    
     # 讀取台股交易日
     def load_trading_day(self):
         df = pd.read_excel('./stock_data/Y9999.xlsx')
@@ -26,68 +27,60 @@ class Env:
         start_date_index = start_date_row.index[0]
         assert start_date_index >= self.history_steps, '交易日資料不足'
         head_date_index = start_date_index - self.history_steps
-        #end_date_index = start_date_index + self.steps
-        #self.trading_day = pd.DatetimeIndex(df['年月日'].iloc[head_date_index:end_date_index])
-        self.trading_day = pd.DatetimeIndex(df['年月日'].iloc[head_date_index:])
-        #self.trading_day = pd.DatetimeIndex(df['年月日'])
+        end_date_index = start_date_index + self.steps
+        self.trading_day = pd.DatetimeIndex(df['年月日'].iloc[head_date_index:end_date_index])
         
     def load_price(self):
-        self.open = pd.DataFrame(index=self.trading_day, columns=self.TARGET)
-        self.close = pd.DataFrame(index=self.trading_day, columns=self.TARGET)
+        # create table
+        open_price = pd.DataFrame(index=self.trading_day, columns=self.CONTRACT)
+        close_price = pd.DataFrame(index=self.trading_day, columns=self.CONTRACT)
         
-        #大台dataset
-        data = pd.read_csv(self.futures_folder + 'tx_2016_2018_new.csv', index_col = 0)
-        data['Date'] = pd.to_datetime(data['Date'])
-        data['contract_rank'] = data.groupby('Date')['Contract'].rank()
-        group_data = data.groupby('contract_rank')
-        data_tx01 = group_data.get_group(1).set_index('Date')
-        data_tx02 = group_data.get_group(2).set_index('Date')
+        # TAIEX
+        tx = pd.read_csv(self.futures_folder + 'tx_2016_2018_new.csv', index_col = 0)
+        tx['Date'] = pd.to_datetime(tx['Date'])
+        tx['near_month'] = tx.groupby('Date')['Contract'].rank()
+        group_tx = tx.groupby('near_month')
+        tx01 = group_tx.get_group(1).set_index('Date')
+        tx02 = group_tx.get_group(2).set_index('Date')
         
-        self.open['TX01'] = data_tx01['Open']
-        self.open['TX02'] = data_tx02['Open']
-        self.close['TX01'] = data_tx01['Close']
-        self.close['TX02'] = data_tx02['Close']
+        open_price['TX01'] = tx01['Open']
+        open_price['TX02'] = tx02['Open']
+        close_price['TX01'] = tx01['Close']
+        close_price['TX02'] = tx02['Close']
         
-        #小台dataset
-        mdata = pd.read_csv(self.futures_folder + 'mtx_2016_2018_new.csv', index_col = 0)
-        mdata['Date'] = pd.to_datetime(mdata['Date'])
-        mdata['contract_rank']=mdata.groupby('Date')['Contract'].rank()
-        group_mdata = mdata.groupby('contract_rank')
-        data_mtx01 = group_mdata.get_group(1).set_index('Date')
-        data_mtx02 = group_mdata.get_group(2).set_index('Date')
+        # Mini-TAIEX
+        mtx = pd.read_csv(self.futures_folder + 'mtx_2016_2018_new.csv', index_col = 0)
+        mtx['Date'] = pd.to_datetime(mtx['Date'])
+        mtx['near_month'] = mtx.groupby('Date')['Contract'].rank()
+        group_mtx = mtx.groupby('near_month')
+        mtx01 = group_mtx.get_group(1).set_index('Date')
+        mtx02 = group_mtx.get_group(2).set_index('Date')
         
-        self.open['MTX01'] = data_mtx01['Open']
-        self.open['MTX02'] = data_mtx02['Open']
-        self.close['MTX01'] = data_mtx01['Close']
-        self.close['MTX02'] = data_mtx02['Close']
+        open_price['MTX01'] = mtx01['Open']
+        open_price['MTX02'] = mtx02['Open']
+        close_price['MTX01'] = mtx01['Close']
+        close_price['MTX02'] = mtx02['Close']
         
-        self.open = self.open.values
-        self.close = self.close.values
+        self.open = open_price.values
+        self.close = close_price.values
         
-    def load_due_date(self):
-        #到期日dataset
-        self.due_date = pd.read_csv(self.futures_folder + 'DueDate.csv')
-        self.due_date['dueDate'] = pd.to_datetime(self.due_date['dueDate'])
-        self.due_date = self.due_date.set_index('dueDate')
+    def load_margin(self):
+        self.margin = pd.read_csv(self.futures_folder + 'margin.csv') #保證金
+        self.margin['start'] = pd.to_datetime(self.margin['start'])
+        self.margin['end'] = pd.to_datetime(self.margin['end'])
         
-    def load_maintain_margin(self):
-        self.maintain_margin = pd.read_csv(self.futures_folder + 'maintain_margin.csv') #保證金
-        self.maintain_margin['start'] = pd.to_datetime(self.maintain_margin['start'])
-        self.maintain_margin['end'] = pd.to_datetime(self.maintain_margin['end'])
+    def load_settlement_price(self):
+        self.settlement_price = pd.read_csv(self.futures_folder + 'settlement.csv')
+        self.settlement_price['Date'] = pd.to_datetime(self.settlement_price['Date'])
+        self.settlement_price = self.settlement_price.set_index('Date')
     
     def get_margin(self, date_index):
-        for index, row in self.maintain_margin.iterrows():
+        for index, row in self.margin.iterrows():
             if row['start'] <= self.trading_day[date_index] <= row['end']:
-                self.margin_original = np.array(
-                        [row['tx_original'],
-                         row['tx_original'],
-                         row['mtx_original'],
-                         row['mtx_original']])
-                self.margin_maintenance = np.array(
-                        [row['tx_maintenance'],
-                         row['tx_maintenance'],
-                         row['mtx_maintenance'],
-                         row['mtx_maintenance']])
+                self.margin_ori = np.array(
+                        [row['tx_original']] * 2 + [row['mtx_original']] * 2)
+                self.margin_maint = np.array(
+                        [row['tx_maintenance']] * 2 + [row['mtx_maintenance']] * 2)
                 return
     
     def reset(
@@ -103,36 +96,35 @@ class Env:
 
         self.cnt = 0
         self.pool = 0
-        self.position = np.zeros(self.TARGET_COUNT, dtype=int)
-        self.position_margin_original = 0
-        self.position_queue = [deque([]) for _ in range(self.TARGET_COUNT)]
-        self.unit_price = np.array([200, 200, 50, 50], dtype = int)
+        self.position = np.zeros(self.CONTRACT_COUNT, dtype=int)
+        self.margin_ori_level = 0
+        self.position_queue = [deque([]) for _ in range(self.CONTRACT_COUNT)]
         self.margin_call = 0
         
         self.load_trading_day()
         self.load_price()
-        self.load_due_date()
-        self.load_maintain_margin()
+        self.load_margin()
+        self.load_settlement_price()
         
     def __new(self, order, cond, open_price):
         deal_new = order.copy()
         deal_new[np.logical_not(cond)] = 0
         volume = np.abs(deal_new)
-        margin = np.sum(self.margin_original * volume)
+        margin = np.sum(self.margin_ori * volume)
         
         # evaluate the required original margin
-        if self.pool < (margin + self.position_margin_original):
-            diff = margin + self.position_margin_original - self.pool
+        if self.pool < (margin + self.margin_ori_level):
+            diff = margin + self.margin_ori_level - self.pool
             if diff > self.cash:
-                tmp_cash = self.cash + self.pool - self.position_margin_original
+                tmp_cash = self.cash + self.pool - self.margin_ori_level
                 for i in np.where(cond)[0]:
-                    if (tmp_cash / self.margin_original[i]) < volume[i]:
+                    if (tmp_cash / self.margin_ori[i]) < volume[i]:
                         # 現金不足，計算最大可買張數
-                        volume[i] = int(tmp_cash / self.margin_original[i])
-                    tmp_cash -= self.margin_original[i] * volume[i]
+                        volume[i] = int(tmp_cash / self.margin_ori[i])
+                    tmp_cash -= self.margin_ori[i] * volume[i]
                 deal_new = np.sign(deal_new) * volume
-                margin = np.sum((self.margin_original * volume)[cond])
-                diff = margin + self.position_margin_original - self.pool
+                margin = np.sum((self.margin_ori * volume)[cond])
+                diff = margin + self.margin_ori_level - self.pool
             self.pool += diff
             self.cash -= diff
             
@@ -141,7 +133,7 @@ class Env:
             self.position_queue[i].extend([open_price[i]] * volume[i])
 
         self.position += deal_new
-        self.position_margin_original += margin
+        self.margin_ori_level += margin
         
         return deal_new
                     
@@ -161,31 +153,33 @@ class Env:
         close_point = open_price * deal_close
         
         # 庫存點位
-        position_point = np.zeros(self.TARGET_COUNT)
+        position_point = np.zeros(self.CONTRACT_COUNT)
         for i in np.where(cond)[0]:
             for j in range(volume[i]):
                 assert len(self.position_queue[i]) > 0
                 position_point[i] += int(self.position_queue[i].popleft())
         position_point *= np.sign(self.position)
         
-        profit = np.sum((close_point + position_point) * -1 * self.unit_price)
+        profit = np.sum((close_point + position_point) * -1 * self.CONTRACT_SIZE)
         self.position += deal_close
-        self.position_margin_original -= np.sum(self.margin_original[cond] * volume[cond])
+        self.margin_ori_level -= np.sum(self.margin_ori[cond] * volume[cond])
         self.pool += profit
         
         return profit, deal_close
         
-    def __settlement(self, due_point):
+    def __settlement(self, date_index):
+        # 結算價
+        final_price = self.settlement_price.loc[self.trading_day[date_index], 'Price']
+        
         # 庫存點位
-        position_point = np.zeros(self.TARGET_COUNT)
+        position_point = np.zeros(self.CONTRACT_COUNT)
         for i in [0, 2]:
-            position_point[i] = sum(self.position_queue[i])
-        position_point *= np.sign(self.position)
+            position_point[i] = sum(self.position_queue[i]) * np.sign(self.position[i])
         
         # 結算點位
-        settlement_point = self.position * due_point
+        settlement_point = self.position * final_price
         settlement_point[[1, 3]] = 0
-        profit = np.sum((settlement_point - position_point) * self.unit_price)
+        profit = np.sum((settlement_point - position_point) * self.CONTRACT_SIZE)
         
         # 轉倉
         self.position[[0, 2]] = self.position[[1, 3]]
@@ -196,18 +190,18 @@ class Env:
         self.position_queue[3].clear()
         
         # 調整保證金水位
-        self.position_margin_original = np.sum(self.margin_original * np.abs(self.position))
+        self.margin_ori_level = np.sum(self.margin_ori * np.abs(self.position))
         
         return profit
         
     def step(self, action):
-        date_index = self.cnt
+        date_index = self.cnt + self.history_steps
         self.get_margin(date_index)
         
         # 委託單
-        order = np.zeros(self.TARGET_COUNT, dtype = int)
-        for code, volume in action:
-            order[self.target_idx[code]] = volume
+        order = np.zeros(self.CONTRACT_COUNT, dtype = int)
+        for symbol, volume in action:
+            order[self.CONTRACT_IDX[symbol]] = volume
         order_original = order.copy()
         
         # 先平倉
@@ -222,13 +216,12 @@ class Env:
         order_deal = deal_close + deal_new
         
         # 結算
-        if self.trading_day[date_index] in env.due_date.index:
-            due_point = self.due_date.loc[self.trading_day[date_index], 'price']
-            profit += self.__settlement(due_point)
+        if self.trading_day[date_index] in env.settlement_price.index:
+            profit += self.__settlement(date_index)
             
         # 庫存點位
-        position_point = np.zeros(self.TARGET_COUNT)
-        for i in range(self.TARGET_COUNT):
+        position_point = np.zeros(self.CONTRACT_COUNT)
+        for i in range(self.CONTRACT_COUNT):
             position_point[i] = sum(self.position_queue[i])
         position_point *= np.sign(self.position)
         
@@ -236,12 +229,12 @@ class Env:
         avg_cost = np.nan_to_num(position_point / self.position)
         
         # 未實現損益
-        unrealized = np.sum((self.close[date_index] * self.position - position_point) * self.unit_price)
+        unrealized = np.sum((self.close[date_index] * self.position - position_point) * self.CONTRACT_SIZE)
         
         # 檢查保證金水位
-        position_margin_maintenance = np.sum(self.margin_maintenance * np.abs(self.position))
-        if self.pool + unrealized < position_margin_maintenance:
-            self.margin_call = self.position_margin_original - (self.pool + unrealized)
+        margin_maint_level = np.sum(self.margin_maint * np.abs(self.position))
+        if self.pool + unrealized < margin_maint_level:
+            self.margin_call = self.margin_ori_level - (self.pool + unrealized)
         
         self.cnt += 1
         
@@ -268,7 +261,6 @@ if __name__ == '__main__':
             [['TX01',2],['TX02',1]],
             [['TX01',-3],['TX02',-3]],            
             ])
-    
     
     for i in range(steps):
         cash, unrealized, profit, position, avg_cost, order, deal, margin_call = env.step(action[i])
