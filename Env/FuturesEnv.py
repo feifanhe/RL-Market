@@ -180,6 +180,7 @@ class Env:
         settlement_point = self.position * final_price
         settlement_point[[1, 3]] = 0
         profit = np.sum((settlement_point - position_point) * self.CONTRACT_SIZE)
+        self.pool += profit
         
         # 轉倉
         self.position[[0, 2]] = self.position[[1, 3]]
@@ -193,7 +194,7 @@ class Env:
         self.margin_ori_level = np.sum(self.margin_ori * np.abs(self.position))
         
         return profit
-        
+    
     def step(self, action):
         date_index = self.cnt + self.history_steps
         self.__update_margin(date_index)
@@ -254,7 +255,7 @@ class Env:
         
         self.cnt += 1
         
-        return self.cash, unrealized, profit, self.position, avg_cost, order_original, order_deal, self.margin_call
+        return self.cash, self.pool, unrealized, profit, self.position, avg_cost, order_original, order_deal, self.margin_call
 
 #%%
 if __name__ == '__main__':
@@ -264,8 +265,8 @@ if __name__ == '__main__':
     
     cash = int(1e+6)
     start_date = '2016/01/19'
-    steps = 4
-    history_steps = 0
+    steps = 5
+    history_steps = 10
     
     env.reset(cash,
               start_date, 
@@ -273,21 +274,23 @@ if __name__ == '__main__':
               history_steps)
     
     action = list([
-            [['TX01',1],['TX02',1]],
-            [['TX01',2],['TX02',1]],
-            [['TX01',-3],['TX02',-3]],
+            [['TX01',-1],['TX02',-1]],
+            [['TX01',-1],['TX02',1]],
+            [['TX01',3],['TX02',3]],
             [],
+            [['TX01',-3],['TX02',-3]],
             ])
     
     for i in range(steps):
-        cash, unrealized, profit, position, avg_cost, order, deal, margin_call = env.step(action[i])
-        print('Cash remains:', cash)
-        print('Profit \t Unrealized \t Margin Call')
-        print(profit, '\t', unrealized, '\t', margin_call)
-        print('Position:\t', position)
-        print('Avg. cost:\t', avg_cost)
+        print(f'[step {i+1}]')
+        cash, pool, unrealized, profit, position, avg_cost, order, deal, margin_call = env.step(action[i])
         print('Order:\t', order)
         print('Deal:\t', deal)
+        print('Position:\t', position)
+        print('Avg. cost:\t', avg_cost)
+        print('Profit \t Unrealized \t Margin Call')
+        print(profit, '\t', unrealized, '\t', margin_call)
+        print('Cash remains:', cash)
+        print('Pool remains:', pool)
         print()
-        # if margin_call > 0, and, cash < margin_call in next step, force liquidating?
         
