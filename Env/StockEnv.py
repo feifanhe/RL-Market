@@ -84,7 +84,22 @@ class Env():
         
         # update table with dividend data from intersection of data cloumns and stock targets
         self.dividend[df.columns & self.stock_targets] = df[df.columns & self.stock_targets]
-            
+    
+    # 讀取除權資料    
+    def load_target_ex_right(self): 
+        df = pd.read_csv(self.stock_folder + 'ex-right.csv')
+        df['年月日'] = pd.to_datetime(df['年月日'])
+        df = df.set_index('年月日')
+        
+        # create table
+        self.ex_right = pd.DataFrame(
+                data = 0,
+                index=self.trading_day, 
+                columns=self.stock_targets)
+        
+        # update table with dividend data from intersection of data cloumns and stock targets
+        self.ex_right[df.columns & self.stock_targets] = df[df.columns & self.stock_targets]
+    
     def reset(
             self,
             cash, #初始化資金
@@ -101,12 +116,13 @@ class Env():
         self.history_steps = history_steps
         self.stock_targets = stock_targets
         self.stock_targets_count = len(stock_targets)
-        self.position = np.zeros(self.stock_targets_count, dtype = int)
+        self.position = np.zeros(self.stock_targets_count)
         self.cost_queue = [deque([]) for _ in range(self.stock_targets_count)]
         
         self.load_trading_day()
         self.load_target_price()
         self.load_target_dividend()
+        self.load_target_ex_right()
         
         self.stock_targets_idx = {j:i for i, j in enumerate(self.stock_targets)}
         
@@ -225,6 +241,8 @@ class Env():
         # 計算配息
         profit_dividend = np.sum(self.dividend.iloc[date_index] * self.position * 1000)
         profit += profit_dividend
+        # 計算配股
+        self.position += self.position * self.ex_right.iloc[date_index].values / 10
         
         self.cnt += 1
         if self.cnt == self.steps:
