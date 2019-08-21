@@ -27,7 +27,6 @@ class BaseEnv():
         self.env_stock = stock.Env(stock_folder)
         
         self.env_futures = futures.Env(futures_folder)
-        self.env_futures.load()
         
         self.env_option = option.Env(option_folder)
         self.env_option.load()
@@ -59,7 +58,11 @@ class BaseEnv():
                 self.steps,
                 self.history_steps,
                 self.stock_targets)
-        self.env_futures.reset(self.cash)
+        self.env_futures.reset(
+                self.cash,
+                self.start_date,
+                self.steps,
+                self.history_steps)
         self.env_option.reset(self.cash)
         
         self.done = False
@@ -98,18 +101,19 @@ class BaseEnv():
         
         # future
         print('ENV_TX STEP:', futures_actions)
-        trading_day = self.env_stock.trading_day
-        date = pd.to_datetime(trading_day[self.history_steps + self.counter]).date()
-        own, cash_tx, profit_tx, cost, position, unrealize, more_money, pool = self.env_futures.step(futures_actions, date)
-        print(own)
-        print('%s\t%s\t%s\t%s\t%s\t%s' % ('cash', 'profit', 'cost', 'pool', 'margin', 'unrealized'))
-        print('%d\t%d\t%d\t%d\t%d\t%d\n' % (cash_tx, profit_tx, cost, pool, more_money, unrealize))
+        cash, unrealized, profit, position, avg_cost, order, deal, margin_call = self.env_futures.step(futures_actions)
+        print(f'Pos:\t{position}')
+        print(f'Cost:\t{avg_cost}')
+        print('cash \t profit \t margin \t unrealized')
+        print(f'{cash}\t{profit}\t{margin_call}\t{unrealized}\n')
         
-        self.cash = cash_tx
+        self.cash = cash
         self.env_option.cash = self.cash
         
         # option
         print('ENV_TXO STEP:', option_actions)
+        trading_day = self.env_stock.trading_day
+        date = pd.to_datetime(trading_day[self.history_steps + self.counter]).date()
         cash_o, profit, position, unrealized = self.env_option.step(option_actions, date)
         print('%s\t%s\t%s' % ('cash', 'profit', 'unrealized'))
         print('%d\t%d\t%d' % (cash_o, profit, unrealized))

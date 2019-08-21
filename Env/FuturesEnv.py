@@ -74,19 +74,10 @@ class Env:
         self.settlement_price['Date'] = pd.to_datetime(self.settlement_price['Date'])
         self.settlement_price = self.settlement_price.set_index('Date')
     
-    def get_margin(self, date_index):
-        for index, row in self.margin.iterrows():
-            if row['start'] <= self.trading_day[date_index] <= row['end']:
-                self.margin_ori = np.array(
-                        [row['tx_original']] * 2 + [row['mtx_original']] * 2)
-                self.margin_maint = np.array(
-                        [row['tx_maintenance']] * 2 + [row['mtx_maintenance']] * 2)
-                return
-    
     def reset(
             self, 
-            start_date, 
             cash,
+            start_date, 
             steps,
             history_steps):
         self.start_date = start_date
@@ -105,6 +96,15 @@ class Env:
         self.load_price()
         self.load_margin()
         self.load_settlement_price()
+    
+    def __update_margin(self, date_index):
+        for index, row in self.margin.iterrows():
+            if row['start'] <= self.trading_day[date_index] <= row['end']:
+                self.margin_ori = np.array(
+                        [row['tx_original']] * 2 + [row['mtx_original']] * 2)
+                self.margin_maint = np.array(
+                        [row['tx_maintenance']] * 2 + [row['mtx_maintenance']] * 2)
+                return
         
     def __new(self, order, cond, open_price):
         deal_new = order.copy()
@@ -196,7 +196,21 @@ class Env:
         
     def step(self, action):
         date_index = self.cnt + self.history_steps
-        self.get_margin(date_index)
+        self.__update_margin(date_index)
+        profit = 0
+        
+        # 追繳保證金
+        deal_liq = np.zeros(self.CONTRACT_COUNT, dtype = int)
+        if self.margin_call > 0:
+            if self.cash < self.margin_call:
+                # liquidate
+                cond_liq = self.position != 0
+                profit_liq, deal_liq = self.__close(self.position * -1, cond_liq, self.open[date_index])
+                profit += profit_liq
+            else:
+               self.cash -= self.margin_call
+               self.pool += self.margin_call
+               self.margin_call = 0
         
         # 委託單
         order = np.zeros(self.CONTRACT_COUNT, dtype = int)
@@ -206,17 +220,18 @@ class Env:
         
         # 先平倉
         cond_close = (order * self.position < 0)
-        profit, deal_close = self.__close(order, cond_close, self.open[date_index])
+        profit_close, deal_close = self.__close(order, cond_close, self.open[date_index])
+        profit += profit_close
         order -= deal_close
         
         # 建倉 / 新倉
         cond_new = (order * self.position >= 0)
         deal_new = self.__new(order, cond_new, self.open[date_index])
         
-        order_deal = deal_close + deal_new
+        order_deal = deal_liq + deal_close + deal_new
         
         # 結算
-        if self.trading_day[date_index] in env.settlement_price.index:
+        if self.trading_day[date_index] in self.settlement_price.index:
             profit += self.__settlement(date_index)
             
         # 庫存點位
@@ -226,7 +241,8 @@ class Env:
         position_point *= np.sign(self.position)
         
         # average cost
-        avg_cost = np.nan_to_num(position_point / self.position)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            avg_cost = np.nan_to_num(position_point / self.position)
         
         # 未實現損益
         unrealized = np.sum((self.close[date_index] * self.position - position_point) * self.CONTRACT_SIZE)
@@ -246,20 +262,21 @@ if __name__ == '__main__':
     futures_folder = './futures_data/'
     env = Env(futures_folder)
     
-    cash = 1e+6
+    cash = int(1e+6)
     start_date = '2016/01/19'
-    steps = 3
+    steps = 4
     history_steps = 0
     
-    env.reset(start_date, 
-              cash,
+    env.reset(cash,
+              start_date, 
               steps,
               history_steps)
     
     action = list([
             [['TX01',1],['TX02',1]],
             [['TX01',2],['TX02',1]],
-            [['TX01',-3],['TX02',-3]],            
+            [['TX01',-3],['TX02',-3]],
+            [],
             ])
     
     for i in range(steps):
