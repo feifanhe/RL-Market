@@ -2,344 +2,283 @@
 """
 Created on Thu Aug  8 20:22:17 2019
 
-@author: yawen
+@author: feifanhe
 """
 import pandas as pd
-#%%
+import numpy as np
+from collections import deque
 
 class Env:
     def __init__(self, futures_folder):
         # Env parameter initial
         self.futures_folder = futures_folder
+        self.target_idx = {j:i for i, j in enumerate(self.TARGET)}
         
-    def load(self):
+    # Constants
+    TARGET = ['TX01', 'TX02', 'MTX01', 'MTX02']
+    TARGET_COUNT = len(TARGET)
+    
+    # 讀取台股交易日
+    def load_trading_day(self):
+        df = pd.read_excel('./stock_data/Y9999.xlsx')
+        start_date_row = df.loc[df['年月日'] == self.start_date]
+        assert len(start_date_row) > 0, '起始日無交易'
+        start_date_index = start_date_row.index[0]
+        assert start_date_index >= self.history_steps, '交易日資料不足'
+        head_date_index = start_date_index - self.history_steps
+        #end_date_index = start_date_index + self.steps
+        #self.trading_day = pd.DatetimeIndex(df['年月日'].iloc[head_date_index:end_date_index])
+        self.trading_day = pd.DatetimeIndex(df['年月日'].iloc[head_date_index:])
+        #self.trading_day = pd.DatetimeIndex(df['年月日'])
+        
+    def load_price(self):
+        self.open = pd.DataFrame(index=self.trading_day, columns=self.TARGET)
+        self.close = pd.DataFrame(index=self.trading_day, columns=self.TARGET)
+        
         #大台dataset
-        data = pd.read_csv(self.futures_folder + 'tx_2016_2018_new.csv')
-        data = data.drop(columns=['Unnamed: 0'])
-        data['Date'] = pd.to_datetime(data['Date']).apply(lambda x: x.date())
+        data = pd.read_csv(self.futures_folder + 'tx_2016_2018_new.csv', index_col = 0)
+        data['Date'] = pd.to_datetime(data['Date'])
+        data['contract_rank'] = data.groupby('Date')['Contract'].rank()
+        group_data = data.groupby('contract_rank')
+        data_tx01 = group_data.get_group(1).set_index('Date')
+        data_tx02 = group_data.get_group(2).set_index('Date')
+        
+        self.open['TX01'] = data_tx01['Open']
+        self.open['TX02'] = data_tx02['Open']
+        self.close['TX01'] = data_tx01['Close']
+        self.close['TX02'] = data_tx02['Close']
+        
         #小台dataset
-        mdata = pd.read_csv(self.futures_folder + 'mtx_2016_2018_new.csv')
-        mdata = mdata.drop(columns=['Unnamed: 0'])
-        mdata['Date'] = pd.to_datetime(mdata['Date']).apply(lambda x: x.date())
-        #到期日dataset
-        self.dueDate_price = pd.read_csv(self.futures_folder + 'DueDate.csv')
-        self.dueDate_price['dueDate'] = pd.to_datetime(self.dueDate_price['dueDate']).apply(lambda x: x.date())
-        self.dueDate=self.dueDate_price['dueDate'].tolist()
-        
-        self.maintain_margin = pd.read_csv(self.futures_folder + 'maintain_margin.csv') #保證金
-        #%%
-        #把近1近2標出來
-        data['contract_rank']=data.groupby('Date')['Contract'].rank()
+        mdata = pd.read_csv(self.futures_folder + 'mtx_2016_2018_new.csv', index_col = 0)
+        mdata['Date'] = pd.to_datetime(mdata['Date'])
         mdata['contract_rank']=mdata.groupby('Date')['Contract'].rank()
-        #大台小台dataset合併
-        self.data = pd.concat([data, mdata])
-
-    def reset(self, cash):
-        self.own = pd.DataFrame(columns=['type','due_mon','buy_point','volumn','per_price'])
-        self.m_acct = 0
-        self.o_acct = 0
-        self.pool = 0
-        self.more_money = 0
+        group_mdata = mdata.groupby('contract_rank')
+        data_mtx01 = group_mdata.get_group(1).set_index('Date')
+        data_mtx02 = group_mdata.get_group(2).set_index('Date')
+        
+        self.open['MTX01'] = data_mtx01['Open']
+        self.open['MTX02'] = data_mtx02['Open']
+        self.close['MTX01'] = data_mtx01['Close']
+        self.close['MTX02'] = data_mtx02['Close']
+        
+        self.open = self.open.values
+        self.close = self.close.values
+        
+    def load_due_date(self):
+        #到期日dataset
+        self.due_date = pd.read_csv(self.futures_folder + 'DueDate.csv')
+        self.due_date['dueDate'] = pd.to_datetime(self.due_date['dueDate'])
+        self.due_date = self.due_date.set_index('dueDate')
+        
+    def load_maintain_margin(self):
+        self.maintain_margin = pd.read_csv(self.futures_folder + 'maintain_margin.csv') #保證金
+        self.maintain_margin['start'] = pd.to_datetime(self.maintain_margin['start'])
+        self.maintain_margin['end'] = pd.to_datetime(self.maintain_margin['end'])
+    
+    def get_margin(self, date_index):
+        for index, row in self.maintain_margin.iterrows():
+            if row['start'] <= self.trading_day[date_index] <= row['end']:
+                self.margin_original = np.array(
+                        [row['tx_original'],
+                         row['tx_original'],
+                         row['mtx_original'],
+                         row['mtx_original']])
+                self.margin_maintenance = np.array(
+                        [row['tx_maintenance'],
+                         row['tx_maintenance'],
+                         row['mtx_maintenance'],
+                         row['mtx_maintenance']])
+                return
+    
+    def reset(
+            self, 
+            start_date, 
+            cash,
+            steps,
+            history_steps):
+        self.start_date = start_date
         self.cash = cash
+        self.steps = steps
+        self.history_steps = history_steps
 
-#%%
-    def buy(self,date,buy_num,act_type,o_margin,m_margin,tx_type,due_mon,per_mon):   
-        cost = 0 
-        position = []
-        abs_buy_num = abs(buy_num)
-        is_pos = buy_num / abs_buy_num #正數還是負數 
-        #向env要原始保證金的錢，先看環境的錢夠不夠給
-        b_money = abs_buy_num*o_margin
-        min_money = b_money + self.o_acct
+        self.cnt = 0
+        self.pool = 0
+        self.position = np.zeros(self.TARGET_COUNT, dtype=int)
+        self.position_margin_original = 0
+        self.position_queue = [deque([]) for _ in range(self.TARGET_COUNT)]
+        self.unit_price = np.array([200, 200, 50, 50], dtype = int)
+        self.margin_call = 0
         
-        if self.pool< min_money:  # pool裡的錢不夠付保證金  
-            dif = min_money - self.pool #dif是當pool中還差多少就到原始保證金，dif一定會>0 若<0就不會進到這
-            if dif <= self.cash : #若環境夠付
-                self.pool = self.pool + dif
-                self.cash = self.cash - dif
-    
-            #若環境錢不夠給，看最多可以給多少                
-            else:
-                buy_vol = int(self.cash / o_margin)
-                #跟env要錢
-                self.cash = self.cash - buy_vol*o_margin
-                self.pool = self.pool + buy_vol*o_margin
-                #把之後要用到buy_num改成新的
-                buy_num = buy_vol*is_pos
-                abs_buy_num = abs(buy_num)
-        #position append                    
-        position=[act_type, buy_num]
+        self.load_trading_day()
+        self.load_price()
+        self.load_due_date()
+        self.load_maintain_margin()
+        
+    def __new(self, order, cond, open_price):
+        deal_new = order.copy()
+        deal_new[np.logical_not(cond)] = 0
+        volume = np.abs(deal_new)
+        margin = np.sum(self.margin_original * volume)
+        
+        # evaluate the required original margin
+        if self.pool < (margin + self.position_margin_original):
+            diff = margin + self.position_margin_original - self.pool
+            if diff > self.cash:
+                tmp_cash = self.cash + self.pool - self.position_margin_original
+                for i in np.where(cond)[0]:
+                    if (tmp_cash / self.margin_original[i]) < volume[i]:
+                        # 現金不足，計算最大可買張數
+                        volume[i] = int(tmp_cash / self.margin_original[i])
+                    tmp_cash -= self.margin_original[i] * volume[i]
+                deal_new = np.sign(deal_new) * volume
+                margin = np.sum((self.margin_original * volume)[cond])
+                diff = margin + self.position_margin_original - self.pool
+            self.pool += diff
+            self.cash -= diff
+            
+        # append to position queue
+        for i in np.where(cond)[0]:
+            self.position_queue[i].extend([open_price[i]] * volume[i])
 
-        #算買的cost
-        c_point = self.data[(self.data['Date']==date) & (self.data['contract_rank']==due_mon) & (self.data['Symbol']==tx_type)]['Open'].iloc[0]
-        cost = o_margin*buy_num*is_pos
-        #存到own中
-        s1 = pd.Series({'type':tx_type, 'due_mon':due_mon,'buy_point':c_point, 'volumn':buy_num, 'per_price':per_mon})
-        self.own = self.own.append(s1, ignore_index=True)
-        #成交稅:成交價的0.00002 = 點數直接除250 ，每口都要算
-        #cost = cost + (c_point/250)*buy_num*is_pos
-        #持有的口數的最低原始與維持保證金為何
-        self.m_acct = self.m_acct + m_margin*abs_buy_num #帳戶中的維持保證金需為
-        self.o_acct = self.o_acct + o_margin*abs_buy_num #帳戶中的原始保證金需為
-        #把數量==0的或從own中刪掉
-        self.own = self.own[self.own['volumn']!=0]
-        self.own = self.own.reset_index(drop=True)
+        self.position += deal_new
+        self.position_margin_original += margin
         
-        return cost, position
+        return deal_new
                     
-    #%%    
-    def sell(self,date,buy_num,act_type,o_margin,m_margin,tx_type,due_mon,per_mon):
-        profit = 0
-        cost = 0
-        position = []
-        abs_buy_num = abs(buy_num)
-        is_pos = buy_num / abs_buy_num #正數還是負數     
-        
-        p_point = self.data[(self.data['Date']==date) & (self.data['contract_rank']==due_mon) & (self.data['Symbol']==tx_type)]['Open'].iloc[0]                  
-        t_b_num = abs_buy_num              
-        for w in range(len(self.own)):
-            if (self.own['type'][w] == tx_type) & (self.own['due_mon'][w] == due_mon) :
-                if t_b_num <= abs(self.own['volumn'][w]):
-                    self.own['volumn'][w] = self.own['volumn'][w] + t_b_num*is_pos
-                    this_profit = (p_point - self.own['buy_point'][w])*t_b_num*per_mon*is_pos
-                    profit = profit + this_profit
-                    #pool增加
-                    self.pool = self.pool + this_profit
-                    break
-                else:
-                    t_b_num = t_b_num - abs(self.own['volumn'][w])
-                    this_profit = (p_point - self.own['buy_point'][w])*abs(self.own['volumn'][w])*per_mon*is_pos
-                    profit = profit + this_profit
-                    #pool增加
-                    self.pool = self.pool + this_profit
-                    self.own['volumn'][w] = 0 
-                    continue  
-        #把數量==0的或從own中刪掉
-        self.own = self.own[self.own['volumn']!=0]
-        self.own = self.own.reset_index(drop=True)
-        
-        #成交稅:成交價的0.00002 = 點數直接除250
-        #cost = cost + (p_point/250)*abs_buy_num            
-        
-        position = [act_type,buy_num]
-        is_contain_sell = 1
-        #持有的口數的最低原始與維持保證金為何
-        self.m_acct = self.m_acct - m_margin*abs_buy_num #帳戶中的維持保證金需為
-        self.o_acct = self.o_acct - o_margin*abs_buy_num #帳戶中的原始保證金需為
-        
-        
-        
-        return cost,profit,position,is_contain_sell        
-    
-#%%
-    def step(self, act, date):
-        profit = 0 #獲利
-        cost = 0 #成本(買(應該用買的點數*200算還是用原始保證金算?)+手續費+交易稅)
-        position = [] #ex:[['TX01', 1], ['TX02', 1]]
-        unrealize = 0 #未實現損益
-        more_money = 0 #如果低於維持保證金要補多少錢 
+    def __close(self, order, cond, open_price):
+        deal_close = order.copy()
+        deal_close[np.logical_not(cond)] = 0
 
-        h_fee = 0 #手續費，沒交易就是0
-        is_contain_sell= 0 #判斷這次交易有沒有含有賣
+        volume = np.abs(deal_close)
+        position_volume = np.abs(self.position)
+
+        # 平倉量超出庫存
+        cond_over_sell = (cond & (volume > position_volume))
+        deal_close[cond_over_sell] = position_volume[cond_over_sell] * -1
+        volume = np.abs(deal_close)
         
-        if date in self.data.Date.values:
-            #算這天的原始保證金和維持保證金為
-            for index, row in self.maintain_margin.iterrows():
-                start=pd.to_datetime(row['start']).date()
-                end=pd.to_datetime(row['end']).date()
-                if start <= date <= end:
-                    tx_o_margin=row['tx_o_margin']
-                    mtx_o_margin=row['mtx_o_margin']
-                    tx_m_margin=row['tx_m_margin']
-                    mtx_m_margin=row['mtx_m_margin']
-                    break
-            
-            # =============================================================================
-            #         執行買賣的action
-            # =============================================================================
-            for acts in act:
-                act_type = acts[0]
-                buy_num = acts[1]
-    
-                #判斷act是大台還是小台 ，近一還是近二
-                if act_type == 'TX01':
-                    o_margin = tx_o_margin
-                    m_margin = tx_m_margin
-                    tx_type = 'TX' #之後查資料方便把tx mtx
-                    due_mon = 1   # 近一近二先標出來
-                    per_mon = 200 #大台200                
-    
-                elif act_type == 'TX02':
-                    o_margin = tx_o_margin
-                    m_margin = tx_m_margin
-                    tx_type = 'TX'
-                    due_mon = 2
-                    per_mon = 200               
-                    
-                elif act_type == 'MTX01':
-                    o_margin = mtx_o_margin
-                    m_margin = mtx_m_margin
-                    tx_type = 'MTX'
-                    due_mon = 1
-                    per_mon = 50
-                    
-                elif act_type == 'MTX02':
-                    o_margin = mtx_o_margin
-                    m_margin = mtx_m_margin
-                    tx_type = 'MTX'
-                    due_mon = 2
-                    per_mon = 50
-                  
-                else: continue
-    
-                #有交易就有手續費，手續費50~100都有，取中間值75
-#                if buy_num != 0 :
-#                    h_fee=75
-                sum_vol = self.own[(self.own['type'] == tx_type) & (self.own['due_mon'] == due_mon)]['volumn'].sum() 
-                
-                #單純買
-                if (sum_vol==0) | (sum_vol*buy_num > 0):
-                    b_cost,b_position = self.buy(date,buy_num,act_type,o_margin,m_margin,tx_type,due_mon,per_mon)
-                    cost += b_cost
-                    position.append(b_position)
-                #單純賣    
-                elif (sum_vol*buy_num < 0) & (abs(sum_vol) >= abs(buy_num)):
-                    s_cost,s_profit,s_position,contain_sell = self.sell(date,buy_num,act_type,o_margin,m_margin,tx_type,due_mon,per_mon)
-                    #算手續費的
-                    is_contain_sell = contain_sell
-                    cost += s_cost
-                    profit += s_profit
-                    position.append(s_position)
-                else: #先賣後買   
-                    a = -sum_vol
-                    b = sum_vol + buy_num
-                    #先賣
-                    s_cost,s_profit,s_position,contain_sell = self.sell(date,a,act_type,o_margin,m_margin,tx_type,due_mon,per_mon)
-                    cost += s_cost
-                    profit += s_profit
-                    #後買
-                    b_cost,b_position = self.buy(date,b,act_type,o_margin,m_margin,tx_type,due_mon,per_mon)
-                    cost += b_cost
-                    position.append([act_type,s_position[1]+b_position[1]])
-                    
-            # =============================================================================
-            #         for 結束     
-            # =============================================================================
-            
-            #判斷當天是否為到期日，是的話要把近一都平倉掉 
-            if date in self.dueDate:
-                #結算價為
-                p = self.dueDate_price[self.dueDate_price['dueDate']==date]
-                due_price = p['price'].iloc[0]            
-                
-                #把own中大台小台 是近一月且數量>0 都抓出來平掉
-                due_own = self.own[(self.own['due_mon']==1) & self.own['volumn']!=0]
-                
-                #sum_num = due_own['volumn'].sum() #共幾口，算成交稅要用的
-                for j,due_row in due_own.iterrows():
-                    profit = profit + (due_price - due_row['buy_point'])*due_row['volumn']*due_row['per_price']
-                    self.own['volumn'][j] = 0
-                    #賣掉-->pool增加
-                    self.pool += (due_price-due_row['buy_point'])*due_row['volumn']*due_row['per_price']
-                    
-                    #持有的口數的最低原始與維持保證金會下降
-                    self.m_acct = self.m_acct - m_margin*abs(due_row['volumn']) #帳戶中的維持保證金需為
-                    self.o_acct = self.o_acct - o_margin*abs(due_row['volumn']) #帳戶中的原始保證金需為
-                    
-                #把數量==0的或從own中刪掉
-                self.own = self.own[self.own['volumn']!=0]
-                self.own = self.own.reset_index(drop=True)
-                
-                #成交稅:成交價的0.00002 = 點數直接除250
-                #cost = cost + (due_price/250)*sum_num
-                is_contain_sell = 1               
-                
-                #同時把own裡面的近二變成近一
-                r_due = {2:1}
-                self.own = self.own.replace({"due_mon":r_due})
-                
-            #目前持有的是否跌破維持保證金，若跌破了向env要求補錢(more_money)
-            lost=0 #保證金水位上升或下降多少  
-            for indexs, rows in self.own.iterrows():  
-                close_p = self.data[(self.data['Date']==date) & (self.data['contract_rank']==rows['due_mon']) & (self.data['Symbol']==rows['type'])]['Close'].iloc[0]            
-                lost = lost + (close_p - rows['buy_point'])*rows['volumn']*rows['per_price']
-            if (self.pool + lost) < self.m_acct:
-                more_money = self.o_acct - (self.pool + lost) #若小於維持保證金要補多少錢
-            #若有賣，維持 原始保證金*剩餘口數的錢 即可
-            if is_contain_sell == 1:         
-                if self.pool > self.o_acct: #若現有的pool的錢 > 目前需要的原始保證金的話 
-                    return_money = self.pool - self.o_acct
-                    self.cash += return_money
-                    self.pool = self.o_acct
-            
-            #算未實現損益   
-            for u_index, u_row in self.own.iterrows():  
-                close_p = self.data[(self.data['Date']==date) & (self.data['contract_rank']==u_row['due_mon']) & (self.data['Symbol']==u_row['type'])]['Close'].iloc[0]            
-                unrealize = unrealize + (close_p - u_row['buy_point'])*u_row['volumn']*u_row['per_price']  
-            #算手續費
-            cost = cost + h_fee
-            
-            profit = int(profit)
-            cost = int(cost)
-            unrealize = int(unrealize)
-                
-        return self.own, self.cash, profit, cost, position, unrealize, more_money, self.pool
-#%%    
-    #追繳保證金
-    def margin_call(self,more_money,date):
-        if self.cash >= more_money:
-            self.cash -= more_money
-            self.pool += more_money
-        #若未依規回補保證金，所有的部位自動以市價平倉
-        #市價先用open(正常應是12點之後的某一點)
-        else:
-            date = date + pd.DateOffset(days=1)
-            date = date.date()
-            for c_index, c_row in self.own.iterrows():  
-                open_p = self.data[(self.data['Date']==date) & (self.data['contract_rank']==c_row['due_mon']) & (self.data['Symbol']==c_row['type'])]['Open'].iloc[0]            
-                self.pool += (open_p - c_row['buy_point'])*c_row['volumn']*c_row['per_price']
-                self.own['volumn'][c_index] = 0
-            #把own中數量==0的清掉
-            self.own = self.own[self.own['volumn']!=0]
-            self.own = self.own.reset_index(drop=True)
-            self.m_acct = 0
-            self.o_acct = 0
+        # 平倉點位
+        close_point = open_price * deal_close
         
+        # 庫存點位
+        position_point = np.zeros(self.TARGET_COUNT)
+        for i in np.where(cond)[0]:
+            for j in range(volume[i]):
+                assert len(self.position_queue[i]) > 0
+                position_point[i] += int(self.position_queue[i].popleft())
+        position_point *= np.sign(self.position)
+        
+        profit = np.sum((close_point + position_point) * -1 * self.unit_price)
+        self.position += deal_close
+        self.position_margin_original -= np.sum(self.margin_original[cond] * volume[cond])
+        self.pool += profit
+        
+        return profit, deal_close
+        
+    def __settlement(self, due_point):
+        # 庫存點位
+        position_point = np.zeros(self.TARGET_COUNT)
+        for i in [0, 2]:
+            position_point[i] = sum(self.position_queue[i])
+        position_point *= np.sign(self.position)
+        
+        # 結算點位
+        settlement_point = self.position * due_point
+        settlement_point[[1, 3]] = 0
+        profit = np.sum((settlement_point - position_point) * self.unit_price)
+        
+        # 轉倉
+        self.position[[0, 2]] = self.position[[1, 3]]
+        self.position[[1, 3]] = 0
+        self.position_queue[0] = self.position_queue[1].copy()
+        self.position_queue[2] = self.position_queue[3].copy()
+        self.position_queue[1].clear()
+        self.position_queue[3].clear()
+        
+        # 調整保證金水位
+        self.position_margin_original = np.sum(self.margin_original * np.abs(self.position))
+        
+        return profit
+        
+    def step(self, action):
+        date_index = self.cnt
+        self.get_margin(date_index)
+        
+        # 委託單
+        order = np.zeros(self.TARGET_COUNT, dtype = int)
+        for code, volume in action:
+            order[self.target_idx[code]] = volume
+        order_original = order.copy()
+        
+        # 先平倉
+        cond_close = (order * self.position < 0)
+        profit, deal_close = self.__close(order, cond_close, self.open[date_index])
+        order -= deal_close
+        
+        # 建倉 / 新倉
+        cond_new = (order * self.position >= 0)
+        deal_new = self.__new(order, cond_new, self.open[date_index])
+        
+        order_deal = deal_close + deal_new
+        
+        # 結算
+        if self.trading_day[date_index] in env.due_date.index:
+            due_point = self.due_date.loc[self.trading_day[date_index], 'price']
+            profit += self.__settlement(due_point)
+            
+        # 庫存點位
+        position_point = np.zeros(self.TARGET_COUNT)
+        for i in range(self.TARGET_COUNT):
+            position_point[i] = sum(self.position_queue[i])
+        position_point *= np.sign(self.position)
+        
+        # average cost
+        avg_cost = np.nan_to_num(position_point / self.position)
+        
+        # 未實現損益
+        unrealized = np.sum((self.close[date_index] * self.position - position_point) * self.unit_price)
+        
+        # 檢查保證金水位
+        position_margin_maintenance = np.sum(self.margin_maintenance * np.abs(self.position))
+        if self.pool + unrealized < position_margin_maintenance:
+            self.margin_call = self.position_margin_original - (self.pool + unrealized)
+        
+        self.cnt += 1
+        
+        return self.cash, unrealized, profit, self.position, avg_cost, order_original, order_deal, self.margin_call
 
 #%%
 if __name__ == '__main__':
-    start_date = '2016/1/19'
-    period = 3
+    
+    futures_folder = './futures_data/'
+    env = Env(futures_folder)
+    
+    cash = 1e+6
+    start_date = '2016/01/19'
+    steps = 3
+    history_steps = 0
+    
+    env.reset(start_date, 
+              cash,
+              steps,
+              history_steps)
+    
     action = list([
             [['TX01',1],['TX02',1]],
             [['TX01',2],['TX02',1]],
             [['TX01',-3],['TX02',-3]],            
-            ])   
+            ])
     
-    futures_folder = './futures_data/'
-    env = Env(futures_folder)
-    env.load()
-    cash = 1e+6
-    env.reset(cash)
     
-    for i in range(period):
-        act = action[i]
-        s_date = pd.to_datetime(start_date)
-        # TODO: [to 非凡] 用 DataOffset 算日期會遇到+1，結果不在資料裡，改成你現在計算日期的方式即可
-        date = s_date + pd.DateOffset(days=i)
-        date = date.date()
+    for i in range(steps):
+        cash, unrealized, profit, position, avg_cost, order, deal, margin_call = env.step(action[i])
+        print('Cash remains:', cash)
+        print('Profit \t Unrealized \t Margin Call')
+        print(profit, '\t', unrealized, '\t', margin_call)
+        print('Position:\t', position)
+        print('Avg. cost:\t', avg_cost)
+        print('Order:\t', order)
+        print('Deal:\t', deal)
+        print()
+        # if margin_call > 0, and, cash < margin_call in next step, force liquidating?
         
-        cash, profit, cost, position, unrealize, more_money = env.step(act, date)
-        
-        #追繳保證金
-        if more_money > 0:
-            env.margin_call(more_money,date)
-        print(cash, profit, cost, position, unrealize, more_money)
-    
-
-
-#%%
-#追繳保證金但env不夠時應該全部平倉還是部份
-    
-    
-    
