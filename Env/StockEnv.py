@@ -199,10 +199,8 @@ class Env():
         
         # append to cost queue
         for i in np.where(cond_buy)[0]:
-            cost = 0
-            for j in range(order[i]):
-                self.cost_queue[i].append(open_price[i])
-                cost += int(open_price[i] * 1000)
+            self.cost_queue[i].extend([open_price[i]] * order[i])
+            cost = int(open_price[i]  * order[i] * 1000)
             cost += self.get_fee(cost)
             total_cost += cost
             
