@@ -114,6 +114,7 @@ class Env():
         self.start_date = start_date
         self.steps = steps
         self.history_steps = history_steps
+        
         self.stock_targets = stock_targets
         self.stock_targets_count = len(stock_targets)
         self.position = np.zeros(self.stock_targets_count)
@@ -125,6 +126,8 @@ class Env():
         self.load_target_ex_right()
         
         self.stock_targets_idx = {j:i for i, j in enumerate(self.stock_targets)}
+        
+        self.done = False
         
         return (self.close[:self.history_steps], # 歷史收盤價
                 self.cash)
@@ -149,7 +152,7 @@ class Env():
     def __sell(self, order, open_price):
         self.__sell_check(order)
         
-        cond_sell = (order < 0)
+        cond_sell = order < 0
         total_income = 0
         total_cost = 0
 

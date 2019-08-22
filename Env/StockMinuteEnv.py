@@ -75,11 +75,13 @@ class Env():
         
         self.stock_targets = stock_targets
         self.stock_targets_count = len(stock_targets)
-        self.position = np.zeros(self.stock_targets_count, dtype = int)
+        self.position = np.zeros(self.stock_targets_count)
         self.cost_queue = [deque([]) for _ in range(self.stock_targets_count)]
         
         self.load_target_price()
         self.stock_targets_idx = {j:i for i, j in enumerate(self.stock_targets)}
+        
+        self.done = False
         
         return (self.close[:self.history_steps], # 歷史收盤價
                 self.cash)
@@ -104,7 +106,7 @@ class Env():
     def __sell(self, order, open_price):
         self.__sell_check(order)
         
-        cond_sell = (order < 0)
+        cond_sell = order < 0
         total_income = 0
         total_cost = 0
 
@@ -154,10 +156,8 @@ class Env():
         
         # append to cost queue
         for i in np.where(cond_buy)[0]:
-            cost = 0
-            for j in range(order[i]):
-                self.cost_queue[i].append(open_price[i])
-                cost += int(open_price[i] * 1000)
+            self.cost_queue[i].extend([open_price[i]] * order[i])
+            cost = int(open_price[i]  * order[i] * 1000)
             cost += self.get_fee(cost)
             total_cost += cost
         
