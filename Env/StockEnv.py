@@ -146,7 +146,7 @@ class Env():
     # check if sell volume is not larger than position volume
     def __sell_check(self, order):
         # 委賣超過庫存，以庫存量成交
-        cond_over_sell = ((self.position + order) < 0)
+        cond_over_sell = (self.position + order) < 0
         order[cond_over_sell] = -1 * self.position[cond_over_sell]
     
     def __sell(self, order, open_price):
@@ -179,7 +179,7 @@ class Env():
     
     # check if cash is enough to buy stocks
     def __buy_check(self, order, open_price):
-        cond_buy = (order > 0) 
+        cond_buy = order > 0
         # 檢查現金是否足夠
         total_cost = np.sum(open_price[cond_buy] * order[cond_buy] * 1000)
         total_cost += self.get_fee(total_cost)
@@ -197,7 +197,7 @@ class Env():
     def __buy(self, order, open_price):
         self.__buy_check(order, open_price)
         
-        cond_buy = (order > 0)
+        cond_buy = order > 0
         total_cost = 0
         
         # append to cost queue
