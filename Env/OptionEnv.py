@@ -2,220 +2,351 @@
 """
 Created on Thu Aug  8 20:22:17 2019
 
-@author: chocy
+@author: feifanhe
 """
 import pandas as pd
 import numpy as np
-#%%
+from collections import deque
+from itertools import product
+
 class Env:
+    # Constants
+    TAX_RATE = 0.001 #交易稅
+    TAX_RATE_SETT = 0.00002 #交易稅(結算)
+    FEE = 15 #手續費
+    MULTIPLIER = 50
+    NEAR_MONTH_IDX = {'TXO01': 0, 'TXO02': 1}
+    CP_IDX = {'C': 0, 'P': 1}
+           
+        
     def __init__(self, option_folder):
         # Env parameter initial
         self.option_folder = option_folder
-        
-    def set_due_date(self, due_date):
-        pass
-        
-    def load(self):
-        #選擇權dataset
-        self.data = pd.read_csv(self.option_folder + 'txo_2016_2018_new.csv')
-        self.data = self.data.drop(columns=['Unnamed: 0'])
-        #轉成datetime
-        self.data['Date'] = pd.to_datetime(self.data['Date']).apply(lambda x: x.date())
-        self.data['Contract'] = pd.to_datetime(self.data['Contract']).apply(lambda x: x.date())
-        #到期日dataset
-        self.dueDate = pd.read_csv(self.option_folder + 'DueDate_txo.csv')
-        self.dueDate['dueDate'] = pd.to_datetime(self.dueDate['dueDate']).apply(lambda x: x.date())
-        self.SettDate = self.dueDate['dueDate'].tolist()
-#        self.dueDate['dueDate'] = pd.to_datetime(self.dueDate['dueDate']).apply(lambda x: x.date())
-#        self.dueDate=self.dueDate_price['dueDate'].tolist()
-        self.Y9999 = pd.read_excel(self.option_folder + 'market.xlsx') #大盤
-        self.Y9999['年月日'] = pd.to_datetime(self.Y9999['年月日']).apply(lambda x: x.date())
-        #保證金AB
-        self.margin_AB = pd.read_excel(self.option_folder + 'margin_AB.xlsx')
-        self.margin_AB['start'] = pd.to_datetime(self.margin_AB['start']).apply(lambda x: x.date())
-        self.margin_AB['end'] = pd.to_datetime(self.margin_AB['end']).apply(lambda x: x.date())
-        
-        self.data_order = pd.DataFrame(columns=['order_date','order_contract','contract_month'
-                                                ,'order_volume'
-                                                ,'order_sp','order_CP','open_pm', 'close_pm'
-                                                , 'premium'])
-       
     
-    def reset(self,cash):
-        self.pool = 0
-#        self.more_money = 0
+    # 讀取台股交易日
+    def load_trading_day(self):
+        df = pd.read_excel('./stock_data/Y9999.xlsx')
+        start_date_row = df.loc[df['年月日'] == self.start_date]
+        assert len(start_date_row) > 0, '起始日無交易'
+        start_date_index = start_date_row.index[0]
+        assert start_date_index >= self.history_steps, '交易日資料不足'
+        head_date_index = start_date_index - self.history_steps
+        end_date_index = start_date_index + self.steps
+        self.taiex_open = df['開盤價(元)'].iloc[head_date_index:end_date_index].values.astype(int)
+        self.taiex_close = df['收盤價(元)'].iloc[head_date_index:end_date_index].values.astype(int)
+        self.trading_day = pd.DatetimeIndex(df['年月日'].iloc[head_date_index:end_date_index])
+        
+    def load_margin(self):
+        self.margin = pd.read_csv(self.option_folder + 'margin.csv') #保證金
+        self.margin['start'] = pd.to_datetime(self.margin['start'])
+        self.margin['end'] = pd.to_datetime(self.margin['end'])
+        
+    def load_settlement_price(self):
+        self.settlement_price = pd.read_csv('./futures_data/settlement.csv')
+        self.settlement_price['Date'] = pd.to_datetime(self.settlement_price['Date'])
+        self.settlement_price = self.settlement_price.set_index('Date')
+    
+    def load_price(self):
+        txo_01_C = pd.read_csv('./txo_1_c.csv', index_col = 0)
+        txo_01_P = pd.read_csv('./txo_1_p.csv', index_col = 0)
+        txo_02_C = pd.read_csv('./txo_2_c.csv', index_col = 0)
+        txo_02_P = pd.read_csv('./txo_2_p.csv', index_col = 0)
+        txo = [[txo_01_C, txo_01_P], [txo_02_C, txo_02_P]]
+        
+        self.sp = np.unique(np.concatenate(
+                [txo[m][n]['Strike Price'].values
+                for m, n in product(range(2), range(2))], axis=None))
+        self.sp_cnt = len(self.sp)
+        self.sp_idx = {j: i for i, j in enumerate(self.sp)}
+        
+        total_steps = self.steps + self.history_steps
+        open_prem = np.zeros((total_steps, 2, 2, self.sp_cnt))
+        close_prem = np.zeros((total_steps, 2, 2, self.sp_cnt))
+        
+        for m, n in product(range(2), range(2)):
+            df = txo[m][n]
+            df['Date'] = pd.to_datetime(df['Date'])
+            date_grouped = df.groupby('Date')
+            for s in range(total_steps):
+                for _, row in date_grouped.get_group(self.trading_day[s]).iterrows():
+                    sp = self.sp_idx[row['Strike Price']]
+                    open_prem[s, m, n, sp] = row['Open']
+                    close_prem[s, m, n, sp] = row['Close']
+        
+        self.open = open_prem
+        self.close = close_prem
+    
+    def reset(
+            self, 
+            cash,
+            start_date, 
+            steps,
+            history_steps):
+
         self.cash = cash
-        self.order_tax = 0.001 #交易稅
-        self.order_taxD = 0.00002 #交易稅(結算)
-        self.order_fee = 15 #手續費
-           
-    def step(self, act, date):
-        self.open_pm = 0
-        position = []
+        self.start_date = start_date
+        self.steps = steps
+        self.history_steps = history_steps
         
-        unrealized = 0
-        profit = 0
-        premium = 0
-        loss_margin = 0
-        total_profit = 0
+        self.load_trading_day()
+        self.load_settlement_price()
+        self.load_margin()
+        self.load_price()
         
-        if date in self.data.Date.values:
-            for index, row in self.margin_AB.iterrows():       
-                start = pd.to_datetime(row['start']).date()
-                end = pd.to_datetime(row['end']).date()
-                if start <= date <= end:
-                    self.margin_A_o = row['o_margin_a']
-                    self.margin_A_m = row['m_margin_a']
-                    self.margin_B_o = row['o_margin_b']
-                    self.margin_B_m = row['m_margin_b']
-                    break
-                            
-        for acts in act:
-            act_type = acts[0]
-            order_volume = acts[1]
-            order_sp = acts[2]
-            total_profit =0
-            
-            if act_type == 'TXO01_C':
-                order_contract = '1'
-                order_CP = 'C'
-            elif act_type == 'TXO02_C':
-                order_contract = '2'
-                order_CP = 'C'
-            elif act_type == 'TXO01_P':
-                order_contract = '1'
-                order_CP = 'P'
-            else:
-                order_contract = '2'
-                order_CP = 'P'
-            
-            #找出到期日月份
-            # TODO: bug
-            index = (date.year - 2016) * 12 + date.month - 1   
-            if date <= self.dueDate['dueDate'][index]:
-                # 結算日前
-                contract_month = index + int(order_contract)
-            else:
-                contract_month = index + int(order_contract)+1
-
-            if (contract_month > 12):
-                contract_month = contract_month-12
-                
-            
-            
-            #篩選出在資料中是哪一筆data
-            target_data = self.data[(self.data['C/P'] == order_CP) & 
-                                    (self.data['Strike Price'] == order_sp) & 
-                                    (self.data['Date'] == date)]
-            #print(target_data)
-            #會篩出(近1或近2)兩筆資料、或是當日沒有交易資料
-            if (len(target_data) == 0):
-                # TODO: 沒有交易資料
-                print('No data:', acts)
-                continue
-            
-            #篩出近1和近2的資料
-            for a in range (len(target_data)):
-                if (target_data['Contract'].iloc[a].month == contract_month): #比對篩出資料的到期月分和data_order的到期月份
-                    target_data = target_data.iloc[[a]]
-                    self.open_pm = target_data['Open'].iloc[0]
-                    self.close_pm = target_data['Close'].iloc[0]
-                    break
-            target_data = target_data.reset_index()
-            
-            premium = self.open_pm * 50 * order_volume
-            
-            
-            # 買進
-            if order_volume > 0:
-                if self.cash < premium:
-                    order_volume = -1 * int(self.cash / self.open_pm * 50)
-                    premium = self.open_pm * 50 * order_volume
-                    
-                self.cash -= premium
-                position.append([act_type, order_volume,order_sp])
-                
-            # 賣
-            if order_volume < 0:
-                '''
-                call價外值： MAXIMUM((履約價格-標的價格) ×契約乘數,0)
-                put價外值： MAXIMUM((標的價格-履約價格)×契約乘數,0)
-                保證金：權利金市值＋MAXIMUM (A值-價外值, B值)
-                '''
-                self.underlying = self.Y9999[self.Y9999['年月日'] == date]['開盤價(元)'].iloc[0]
-                if order_CP == 'C':
-                    out_value = np.maximum((order_sp - self.underlying) * 50, 0)
-                else:                     
-                    out_value = np.maximum((self.underlying - order_sp) * 50, 0)
-                
-                # 賣方需要的保證金
-                margin = np.maximum(self.margin_A_o - out_value, self.margin_B_o) + self.open_pm * 50
-                
-                # TODO: 計算保證金
-                if self.pool < margin * order_volume: # pool中的錢不夠,要求補錢
-                    dif = margin * order_volume - self.pool
-                    if dif <= self.cash: # 環境夠付
-                        self.pool += dif
-                        self.cash -= dif
-                        position.append([act_type, order_volume, order_sp])
-                    else:
-                        # 只賣出環境夠付的部位
-                        order_volume = -1 * int(self.cash / margin)
-                        # 跟環境要錢
-                        self.cash = self.cash - order_volume * margin
-                        
-                        position.append([act_type, order_volume, order_sp])
-                else:
-                    position.append([act_type, order_volume,order_sp])
-                    
-            self.data_order = self.data_order.append({
-                    'order_date':date,
-                    'order_contract':order_contract,
-                    'contract_month':contract_month,
-                    'order_volume':order_volume,
-                    'order_sp':order_sp,
-                    'order_CP':order_CP,
-                    'open_pm':self.open_pm,
-                    'close_pm':self.close_pm,
-                    'premium':premium,
-                    }, ignore_index=True)
-
-        if date in self.SettDate:
-            #判斷是否為結算日    
-            sett_p = self.dueDate[self.dueDate['dueDate']==date]['settlement'].iloc[0]
-
-            for j in range (len(self.data_order)):
-                #取order中strike price
-                price_pre = int(self.data_order['order_sp'][j])
-                #到期日前，算profit
-                if (self.data_order['order_date'][j]<=date):
-                    if (self.data_order['order_volume'][j] > 0) & (self.data_order['order_CP'][j] == 'C'):#buy call
-                        profit = (np.maximum((sett_p - price_pre), 0) * 50 * 
-                                  int(self.data_order['order_volume'][j]) - self.data_order['premium'][j])* (1 - self.order_taxD)
-                    elif (self.data_order['order_volume'][j]>0) & (self.data_order['order_CP'][j] == 'P'):
-                        profit = (np.maximum((price_pre-sett_p),0)*50*int(self.data_order['order_volume'][j])-self.data_order['premium'][j])*(1-self.order_taxD)
-                    elif (self.data_order['order_volume'][j]<0) & (self.data_order['order_CP'][j] == 'C'):
-                        profit = -np.maximum((sett_p-price_pre),0)*50*int(self.data_order['order_volume'][j]*(-1))+self.data_order['premium'][j]
-                        loss_margin = (sett_p-price_pre)*50*int(self.data_order['order_volume'][j])*(-1)
-                    else:
-                        profit = np.maximum((price_pre-sett_p),0)*50*int(self.data_order['order_volume'][j]*(-1))+self.data_order['premium'][j]
-                        loss_margin = (price_pre-sett_p)*50*int(self.data_order['order_volume'][j])*(-1)
-
-                    self.data_order = self.data_order.drop([j])
-                    total_profit += profit
-                     
-                self.pool -= loss_margin
-                
-        else: #buy方未實現損益
-            for j in range (len(self.data_order)):
-                if(self.data_order['order_volume'][j] > 0):
-                    unrealized += (self.data_order['close_pm'][j]-self.data_order['open_pm'][j])*50*int(self.data_order['order_volume'][j])*(1-self.order_tax)
-                if(self.data_order['order_volume'][j] < 0):
-                    unrealized += (self.data_order['premium'][j])
-
-        self.cash += total_profit
-        return self.cash, total_profit, position, unrealized                     
+        self.cnt = 0
+        self.pool = 0
+        self.margin_ori_lvl = 0
+        self.margin_maint_lvl = 0
+        self.margin_call = 0
+        self.position = np.zeros((2, 2, self.sp_cnt), dtype=int)
+        self.position_queue = [[[
+                deque([]) 
+                for _ in range(self.sp_cnt)]
+                for _ in range(2)]
+                for _ in range(2)]
     
+    def __update_margin(self, date_index):
+        for index, row in self.margin.iterrows():
+            if row['start'] <= self.trading_day[date_index] <= row['end']:
+                self.margin_ori_a = row['ori_a']
+                self.margin_maint_a = row['maint_a']
+                self.margin_ori_b = row['ori_b']
+                self.margin_maint_b = row['maint_b']
+                
+    def __update_margin_lvl(self, target_price):
+        position_volume = np.abs(self.position)
+        cond = self.position < 0
+        margin_ori = np.zeros(self.position.shape, dtype=int)
+        margin_maint = np.zeros(self.position.shape, dtype=int)
+        for m, n in product(range(2), range(2)):
+            for i in np.where(cond[m, n])[0]:    
+                otm_value = max((self.sp[i] - target_price) * (-1) ** n, 0)
+                margin_ori[m, n, i] = (
+                        sum(self.position_queue[m][n][i]) * self.MULTIPLIER
+                      + max(self.margin_ori_a - otm_value, self.margin_ori_b) * position_volume[m, n, i])
+                margin_maint[m, n, i] = (
+                        sum(self.position_queue[m][n][i]) * self.MULTIPLIER
+                      + max(self.margin_maint_a - otm_value, self.margin_maint_b) * position_volume[m, n, i])
+        self.margin_ori_lvl = np.sum(margin_ori[cond])
+        self.margin_maint_lvl = np.sum(margin_maint[cond])
+           
+    def __new(self, order, cond, open_prem, target_price):
+        deal_new = order.copy()
+        
+        # long option
+        cond_long = cond & (deal_new > 0)
+        cost = self.__long(deal_new, cond_long, open_prem)
+
+        # short option
+        cond_short = cond & (deal_new < 0)
+        premium = self.__short(deal_new, cond_short, open_prem, target_price)
+        
+        return deal_new, cost, premium
+    
+    def __long(self, order, cond, open_prem):
+        total_cost = int(np.sum(open_prem[cond] * order[cond]) * self.MULTIPLIER)
+        if self.pool < total_cost + self.margin_ori_lvl:
+            diff = total_cost + self.margin_ori_lvl - self.pool
+            if diff > self.cash:
+                tmp_cash = self.cash + self.pool - self.margin_ori_lvl
+                for m, n in product(range(2), range(2)):
+                    for i in np.where(cond[m, n])[0]:
+                        unit_price = open_prem[m, n, i] * self.MULTIPLIER
+                        max_volume = int(tmp_cash / unit_price)
+                        if max_volume < order[m, n, i]:
+                            order[m, n, i] = max_volume
+                        tmp_cash -= unit_price * order[m, n, i]
+                total_cost = int(np.sum(open_prem[cond] * order[cond]) * self.MULTIPLIER)
+                diff = total_cost + self.margin_ori_lvl - self.pool
+            # 入金
+            self.pool += diff
+            self.cash -= diff
+        
+        # 從保證金帳戶扣權利金
+        self.pool -= total_cost
+        
+        for m, n in product(range(2), range(2)):
+            for i in np.where(cond[m, n])[0]:
+                self.position_queue[m][n][i].extend([open_prem[m, n, i]] * order[m, n, i])
+        self.position[cond] += order[cond]
+        
+        return total_cost
+    
+    def __short(self, order, cond, open_prem, target_price):
+        '''
+        call價外值： MAXIMUM((履約價格-標的價格) ×契約乘數,0)
+        put價外值： MAXIMUM((標的價格-履約價格)×契約乘數,0)
+        保證金：權利金市值＋MAXIMUM (A值-價外值, B值)
+        '''
+        volume = np.abs(order)
+        margin = np.zeros(order.shape, dtype=int)
+        for m, n in product(range(2), range(2)):
+            for i in np.where(cond[m, n])[0]:    
+                otm_value = max((self.sp[i] - target_price) * (-1) ** n, 0)
+                margin[m, n, i] = int(
+                        open_prem[m, n, i] * self.MULTIPLIER 
+                        + max(self.margin_ori_a - otm_value,
+                              self.margin_ori_b))
+        total_margin = np.sum(margin[cond] * volume[cond])
+        
+        if self.pool < (total_margin + self.margin_ori_lvl):
+            diff = total_margin + self.margin_ori_lvl - self.pool
+            if diff > self.cash:
+                tmp_cash = self.cash + self.pool - self.margin_ori_lvl
+                for m, n in product(range(2), range(2)):
+                    for i in np.where(cond[m, n])[0]:
+                        max_volume = int(tmp_cash / margin[m, n, i])
+                        if max_volume < volume[m, n, i]:
+                            # 現金不足，計算最大可買張數
+                            volume[m, n, i] = max_volume
+                        tmp_cash -= margin[m, n, i] * volume[m, n, i]
+                order[cond] = volume[cond] * -1
+                total_margin = np.sum((margin * volume)[cond])
+                diff = total_margin + self.margin_ori_lvl - self.pool
+            self.pool += diff
+            self.cash -= diff
+        
+        # 收權利金
+        premium = int(np.sum(open_prem[cond] * volume[cond]) * self.MULTIPLIER)
+        self.pool += premium
+        
+        for m, n in product(range(2), range(2)):
+            for i in np.where(cond[m, n])[0]:
+                self.position_queue[m][n][i].extend([open_prem[m, n, i]] * volume[m, n, i])
+        self.position[cond] += order[cond]
+        self.margin_ori_lvl += total_margin
+    
+        return premium
+    
+    def __close(self, order, cond, open_prem, target_price):
+        deal_close = order.copy()
+        deal_close[np.logical_not(cond)] = 0
+        
+        volume = np.abs(deal_close)
+        position_volume = np.abs(self.position)
+        
+        # 平倉量超出庫存
+        cond_over_sell = cond & (volume > position_volume)
+        deal_close[cond_over_sell] = position_volume[cond_over_sell] * -1
+        volume[cond_over_sell] = np.abs(deal_close[cond_over_sell])
+        
+        # 平倉權利金
+        close_point = open_prem * deal_close
+        
+        # 庫存點位
+        position_point = np.zeros(self.position.shape)
+        for m, n in product(range(2), range(2)):
+            for i in np.where(cond[m][n])[0]:
+                for j in range(volume[m, n, i]):
+                    assert len(self.position_queue[m][n][i]) > 0
+                    position_point[m, n, i] += self.position_queue[m][n][i].popleft()
+        position_point *= np.sign(self.position)
+        profit = int(np.sum(close_point + position_point)) * -1 * self.MULTIPLIER
+        
+        self.position += deal_close
+        self.pool += profit
+        
+        # 調整保證金水位
+        self.__update_margin_lvl(target_price)
+        
+        return profit, deal_close
+    
+    def __settlement(self, date_index):
+        # 履約價
+        strike_point = self.position[0] * self.sp
+        
+        # 結算價
+        final_price = self.settlement_price.loc[self.trading_day[date_index], 'Price']
+        
+        # 結算點位
+        settlement_point = self.position[0] * final_price
+        
+        profit = np.sum(np.maximum(settlement_point - strike_point, 0).T * [1, -1]) * self.MULTIPLIER
+        self.pool += profit
+        
+        # 轉倉
+        self.position[0] = self.position[1]
+        self.position[1] = 0
+        
+        for n, o in product(range(2), range(self.sp_cnt)): 
+            self.position_queue[0][n][o] = self.position_queue[1][n][o].copy()
+            self.position_queue[1][n][o].clear()
+
+        return profit
+    
+    def step(self, action):
+        date_index = self.cnt + self.history_steps
+        self.__update_margin(date_index)
+
+        profit = 0
+        
+        # 追繳保證金
+        deal_liq = np.zeros(self.position.shape, dtype=int)
+        if self.margin_call > 0:
+            if self.cash < self.margin_call:
+                # liquidate
+                cond_liq = self.position < 0
+                profit_liq, deal_liq = self.__close(self.position * -1, cond_liq, self.open[date_index], self.taiex_open[date_index])
+                profit += profit_liq
+            else:
+               self.cash -= self.margin_call
+               self.pool += self.margin_call
+               self.margin_call = 0
+        
+        # 委託
+        order = np.zeros(self.position.shape, dtype=int)
+        for near_month, cp, sp, volume in action:
+            order[self.NEAR_MONTH_IDX[near_month], 
+                  self.CP_IDX[cp],
+                  self.sp_idx[sp]] = volume
+        order_original = order.copy()
+        
+        # 先平倉
+        cond_close = (order * self.position) < 0
+        profit_close, deal_close = self.__close(order, 
+                                                cond_close, 
+                                                self.open[date_index], 
+                                                self.taiex_open[date_index])
+        profit += profit_close
+        order -= deal_close
+        
+        # 建倉 / 新倉
+        cond_new = (order * self.position) >= 0
+        deal_new, cost, premium = self.__new(order, 
+                                             cond_new, 
+                                             self.open[date_index],
+                                             self.taiex_open[date_index])
+        order_deal = deal_close + deal_new + deal_liq
+        
+        # 結算
+        if self.trading_day[date_index] in self.settlement_price.index:
+            profit += self.__settlement(date_index)
+            
+        # 未實現損益 = 
+        position_point = self.sp * self.position
+        close_point = self.taiex_close[date_index] * self.position 
+        diff = np.sum(np.maximum(close_point - position_point, 0).T * [1, -1]) * self.MULTIPLIER
+        unrealized = premium - cost + diff
+        
+        # 檢查保證金水位
+        self.__update_margin_lvl(self.taiex_close[date_index])
+        if self.pool < self.margin_maint_lvl:
+            # 低於維持保證金，追繳至原始保證金
+            self.margin_call = self.margin_ori_lvl - self.pool
+        
+        self.cnt += 1
+        
+        return (self.cash, 
+                self.pool,
+                cost,       # 權利金支出
+                premium,    # 權利金收入
+                unrealized, 
+                profit, 
+                self.position, 
+                order_original, 
+                order_deal, 
+                self.margin_call
+                )
         
 #%%
 if __name__ == '__main__':
@@ -224,37 +355,24 @@ if __name__ == '__main__':
     start_date = '2016/01/19'
     period = 4
     action = list([
-            [['TXO01_C',1,7900],['TXO02_C',-2,7900],['TXO01_P',-1,7700]],
-            [['TXO02_P',2,8700],['TXO01_C',2,7900],['TXO01_P',1,8500]],
-            [['TXO01_C',1,9200],['TXO02_C',-1,9200]],
-            [['TXO01_P',-1,7700]]
+            [['TXO01', 'C', 7900, 1], ['TXO02', 'C', 7900, -2], ['TXO01', 'P', 7700, -1]],
+            [['TXO02', 'P', 8700, 2], ['TXO01', 'C', 7900, 2], ['TXO01', 'P', 8500, 1]],
+            [['TXO01', 'C', 9200, 1],['TXO02', 'C', 9200, -1]],
+            [['TXO01', 'P', 7700, -1]]
             ])   
     
     cash = 1e+6
     env = Env(option_folder)  
-    env.load()
-    env.reset(cash)
+    env.reset(cash, start_date, period, 0)
     
     for i in range(period):
-        act = action[i]
-        s_date = pd.to_datetime(start_date)
-        # TODO: [to 非凡] 用 DataOffset 算日期會遇到+1，結果不在資料裡，改成你現在計算日期的方式即可
-        date = s_date + pd.DateOffset(days=i)
-        date = date.date()
-        print(date)
-        cash, profit, position, unrealized = env.step(act, date)
+        print(f'[Step {i+1}]')
+        print(action[i])
+        cash, pool, cost, premium, unrealized, profit, position, order, deal, margin_call = env.step(action[i])
         
-        print(cash, profit, position, unrealized)
-    #%%
-    dueDate = env.dueDate
-    Data = env.data
-#    env.reset(cash)
-    data_order = env.data_order        
-
-    margin_AB = env.margin_AB
-
-#%%
-#追繳保證金但env不夠時應該全部平倉還是部份
-    
-    
-    
+        print('Position:\n', position)
+        print('Cost\tPremium\tProfit\tUnrl\tMargin Call')
+        print(f'{cost}\t{premium}\t{profit}\t{unrealized}\t{margin_call}')
+        print('Cash remains:', cash)
+        print('Pool remains:', pool)
+        print()

@@ -140,12 +140,11 @@ class Env:
     def __close(self, order, cond, open_price):
         deal_close = order.copy()
         deal_close[np.logical_not(cond)] = 0
-
         volume = np.abs(deal_close)
         position_volume = np.abs(self.position)
 
         # 平倉量超出庫存
-        cond_over_sell = (cond & (volume > position_volume))
+        cond_over_sell = cond & (volume > position_volume)
         deal_close[cond_over_sell] = position_volume[cond_over_sell] * -1
         volume = np.abs(deal_close)
         
@@ -220,13 +219,13 @@ class Env:
         order_original = order.copy()
         
         # 先平倉
-        cond_close = (order * self.position < 0)
+        cond_close = (order * self.position) < 0
         profit_close, deal_close = self.__close(order, cond_close, self.open[date_index])
         profit += profit_close
         order -= deal_close
         
         # 建倉 / 新倉
-        cond_new = (order * self.position >= 0)
+        cond_new = (order * self.position) >= 0
         deal_new = self.__new(order, cond_new, self.open[date_index])
         
         order_deal = deal_liq + deal_close + deal_new

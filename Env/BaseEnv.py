@@ -25,11 +25,8 @@ class BaseEnv():
         self.done = True
         
         self.env_stock = stock.Env(stock_folder)
-        
         self.env_futures = futures.Env(futures_folder)
-        
         self.env_option = option.Env(option_folder)
-        self.env_option.load()
         
     def reset(
             self,
@@ -63,7 +60,11 @@ class BaseEnv():
                 self.start_date,
                 self.steps,
                 self.history_steps)
-        self.env_option.reset(self.cash)
+        self.env_option.reset(
+                self.cash,
+                self.start_date,
+                self.steps,
+                self.history_steps)
         
         self.done = False
     
@@ -101,7 +102,7 @@ class BaseEnv():
         
         # future
         print('ENV_TX STEP:', futures_actions)
-        cash, unrealized, profit, position, avg_cost, order, deal, margin_call = self.env_futures.step(futures_actions)
+        cash, pool, unrealized, profit, position, avg_cost, order, deal, margin_call = self.env_futures.step(futures_actions)
         print(f'Pos:\t{position}')
         print(f'Cost:\t{avg_cost}')
         print('cash \t profit \t margin \t unrealized')
@@ -112,17 +113,16 @@ class BaseEnv():
         
         # option
         print('ENV_TXO STEP:', option_actions)
-        trading_day = self.env_stock.trading_day
-        date = pd.to_datetime(trading_day[self.history_steps + self.counter]).date()
-        cash_o, profit, position, unrealized = self.env_option.step(option_actions, date)
+        cash, pool, cost, premium, unrealized, profit, position, order, deal, margin_call = self.env_option.step(option_actions)
         print('%s\t%s\t%s' % ('cash', 'profit', 'unrealized'))
-        print('%d\t%d\t%d' % (cash_o, profit, unrealized))
+        print('%d\t%d\t%d' % (cash, profit, unrealized))
         print('\n================\n')
         
-        self.cash = cash_o
+        self.cash = cash
         
         self.counter += 1
-        
+        if self.counter == self.steps:
+            self.done = True
 #%%
 
 if __name__ == '__main__':
@@ -149,23 +149,23 @@ if __name__ == '__main__':
             steps,
             history_steps,
             targets)
-    
+
     actions = [
              # action 0
              [['s', '1101', 1], ['s', '2330', 10],
               ['f', 'TX01',1], ['f', 'TX02',1], ['f', 'MTX01',1],
-              ['o', 'TXO01_C', 1, 7900], ['o', 'TXO02_C', -2, 7900], ['o', 'TXO01_P', -1, 7700]],
+              ['o', 'TXO01', 'C', 7900, 1], ['o', 'TXO02', 'C', 7900, -2], ['o', 'TXO01', 'P', 7700, -1]],
              # action 1
              [['s', '1301', 1], ['s', '2330', 2],
               ['f', 'TX01',-1], ['f', 'TX02',-3],
-              ['o', 'TXO02_P', 2, 8700], ['o', 'TXO01_C', 2, 7900], ['o', 'TXO01_P', 1, 8500]],
+              ['o', 'TXO02', 'P', 8700, 2], ['o', 'TXO01', 'C', 7900, 2], ['o', 'TXO01', 'P', 8500, 1]],
              # action 2
              [['s', '1301', 3], ['s', '2330', -1],
               ['f', 'TX01',1], ['f', 'TX02',2],
-              ['o', 'TXO01_C', 1, 9200], ['o', 'TXO02_C', -1, 9200]],
+              ['o', 'TXO01', 'C', 9200, 1],['o', 'TXO02', 'C', 9200, -1]],
              # action 3
              [['s', '1101', 5], ['s', '1301', -20],
-              ['o', 'TXO01_P', -1, 7700]]
+              ['o', 'TXO01', 'P', 7700, -1]]
             ]
 
     
