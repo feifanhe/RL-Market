@@ -227,7 +227,7 @@ class Env:
         
         # 平倉量超出庫存
         cond_over_sell = cond & (volume > position_volume)
-        deal_close[cond_over_sell] = position_volume[cond_over_sell] * -1
+        deal_close[cond_over_sell] = self.position[cond_over_sell] * -1
         volume[cond_over_sell] = np.abs(deal_close[cond_over_sell])
         
         # 平倉權利金
