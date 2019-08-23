@@ -264,6 +264,13 @@ class Env:
         profit = np.sum(np.maximum(settlement_point - strike_point, 0).T * [1, -1]) * self.MULTIPLIER
         self.pool += profit
         
+        self.position[0] = 0
+        position_point = np.zeros(self.position.shape)
+        for m, n, i in product(range(2), range(2), range(self.sp_cnt)):
+            position_point[m, n, i] = sum(self.position_queue[m][n][i]) * np.sign(self.position[m, n, i])
+        close_point = (self.close[date_index] * self.position).astype(int)
+        unrealized = int(np.sum(close_point - position_point)) * self.MULTIPLIER
+        
         # 轉倉
         self.position[0] = self.position[1]
         self.position[1] = 0
@@ -272,7 +279,7 @@ class Env:
             self.position_queue[0][n][o] = self.position_queue[1][n][o].copy()
             self.position_queue[1][n][o].clear()
 
-        return profit
+        return profit, unrealized
     
     def step(self, action):
         date_index = self.cnt + self.history_steps
@@ -316,17 +323,21 @@ class Env:
                                              cond_new, 
                                              self.open[date_index],
                                              self.taiex_open[date_index])
+        
         order_deal = deal_close + deal_new + deal_liq
         
         # 結算
+        unrealized = 0
         if self.trading_day[date_index] in self.settlement_price.index:
-            profit += self.__settlement(date_index)
-            
-        # 未實現損益 = 
-        position_point = self.sp * self.position
-        close_point = self.taiex_close[date_index] * self.position 
-        diff = np.sum(np.maximum(close_point - position_point, 0).T * [1, -1]) * self.MULTIPLIER
-        unrealized = premium - cost + diff
+            profit_sett, unrealized = self.__settlement(date_index)
+            profit += profit_sett
+        else:
+            # 未實現損益
+            position_point = np.zeros(self.position.shape)
+            for m, n, i in product(range(2), range(2), range(self.sp_cnt)):
+                position_point[m, n, i] = sum(self.position_queue[m][n][i]) * np.sign(self.position[m, n, i])
+            close_point = self.close[date_index] * self.position
+            unrealized = int(np.sum(close_point - position_point)) * self.MULTIPLIER
         
         # 檢查保證金水位
         self.__update_margin_lvl(self.taiex_close[date_index])
@@ -340,7 +351,7 @@ class Env:
                 self.pool,
                 cost,       # 權利金支出
                 premium,    # 權利金收入
-                unrealized, 
+                unrealized, # 權利金差
                 profit, 
                 self.position, 
                 order_original, 
