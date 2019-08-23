@@ -7,6 +7,7 @@ Created on Thu Aug  8 20:22:17 2019
 import pandas as pd
 import numpy as np
 from collections import deque
+import time
 
 class Env:
     # Constants
@@ -18,6 +19,7 @@ class Env:
     def __init__(self, futures_folder):
         # Env parameter initial
         self.futures_folder = futures_folder
+        self.done = True
         
     # 讀取台股交易日
     def load_trading_day(self):
@@ -96,6 +98,8 @@ class Env:
         self.load_price()
         self.load_margin()
         self.load_settlement_price()
+        
+        self.done = False
     
     def __update_margin(self, date_index):
         for index, row in self.margin.iterrows():
@@ -123,7 +127,7 @@ class Env:
                         volume[i] = int(tmp_cash / self.margin_ori[i])
                     tmp_cash -= self.margin_ori[i] * volume[i]
                 deal_new = np.sign(deal_new) * volume
-                margin = np.sum((self.margin_ori * volume)[cond])
+                margin = np.sum(self.margin_ori * volume)
                 diff = margin + self.margin_ori_level - self.pool
             self.pool += diff
             self.cash -= diff
@@ -145,7 +149,7 @@ class Env:
 
         # 平倉量超出庫存
         cond_over_sell = cond & (volume > position_volume)
-        deal_close[cond_over_sell] = position_volume[cond_over_sell] * -1
+        deal_close[cond_over_sell] = self.position[cond_over_sell] * -1
         volume = np.abs(deal_close)
         
         # 平倉點位
@@ -161,7 +165,8 @@ class Env:
         
         profit = np.sum((close_point + position_point) * -1 * self.CONTRACT_SIZE)
         self.position += deal_close
-        self.margin_ori_level -= np.sum(self.margin_ori[cond] * volume[cond])
+        
+        self.margin_ori_level -= np.sum(self.margin_ori * volume)
         self.pool += profit
         
         return profit, deal_close
@@ -253,6 +258,8 @@ class Env:
             self.margin_call = self.margin_ori_level - (self.pool + unrealized)
         
         self.cnt += 1
+        if self.cnt == self.steps:
+            self.done = True
         
         return self.cash, self.pool, unrealized, profit, self.position, avg_cost, order_original, order_deal, self.margin_call
 
@@ -281,8 +288,11 @@ if __name__ == '__main__':
             ])
     
     for i in range(steps):
+        
         print(f'[step {i+1}]')
+        start_time = time.time()
         cash, pool, unrealized, profit, position, avg_cost, order, deal, margin_call = env.step(action[i])
+        end_time = time.time()
         print('Order:\t', order)
         print('Deal:\t', deal)
         print('Position:\t', position)
@@ -291,5 +301,6 @@ if __name__ == '__main__':
         print(profit, '\t', unrealized, '\t', margin_call)
         print('Cash remains:', cash)
         print('Pool remains:', pool)
+        print(f'[Time: {(end_time - start_time) * 1000}ms]')
         print()
         

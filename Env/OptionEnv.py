@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 from collections import deque
 from itertools import product
+import time
 
 class Env:
     # Constants
@@ -22,7 +23,8 @@ class Env:
     def __init__(self, option_folder):
         # Env parameter initial
         self.option_folder = option_folder
-    
+        self.done = True
+        
     # 讀取台股交易日
     def load_trading_day(self):
         df = pd.read_excel(self.option_folder + 'Y9999.xlsx')
@@ -104,7 +106,9 @@ class Env:
                 for _ in range(self.sp_cnt)]
                 for _ in range(2)]
                 for _ in range(2)]
-    
+        
+        self.done = False
+        
     def __update_margin(self, date_index):
         for index, row in self.margin.iterrows():
             if row['start'] <= self.trading_day[date_index] <= row['end']:
@@ -131,20 +135,21 @@ class Env:
         self.margin_maint_lvl = np.sum(margin_maint[cond])
            
     def __new(self, order, cond, open_prem, target_price):
-        deal_new = order.copy()
-        
         # long option
-        cond_long = cond & (deal_new > 0)
-        cost = self.__long(deal_new, cond_long, open_prem)
+        cond_long = cond & (order > 0)
+        deal_long, cost = self.__long(order, cond_long, open_prem)
 
         # short option
-        cond_short = cond & (deal_new < 0)
-        premium = self.__short(deal_new, cond_short, open_prem, target_price)
+        cond_short = cond & (order < 0)
+        deal_short, premium = self.__short(order, cond_short, open_prem, target_price)
         
-        return deal_new, cost, premium
+        return deal_long + deal_short, cost, premium
     
     def __long(self, order, cond, open_prem):
-        total_cost = int(np.sum(open_prem[cond] * order[cond]) * self.MULTIPLIER)
+        deal_long = order.copy()
+        deal_long[np.logical_not(cond)] = 0
+        
+        total_cost = int(np.sum(open_prem * order) * self.MULTIPLIER)
         if self.pool < total_cost + self.margin_ori_lvl:
             diff = total_cost + self.margin_ori_lvl - self.pool
             if diff > self.cash:
@@ -153,10 +158,10 @@ class Env:
                     for i in np.where(cond[m, n])[0]:
                         unit_price = open_prem[m, n, i] * self.MULTIPLIER
                         max_volume = int(tmp_cash / unit_price)
-                        if max_volume < order[m, n, i]:
-                            order[m, n, i] = max_volume
-                        tmp_cash -= unit_price * order[m, n, i]
-                total_cost = int(np.sum(open_prem[cond] * order[cond]) * self.MULTIPLIER)
+                        if max_volume < deal_long[m, n, i]:
+                            deal_long[m, n, i] = max_volume
+                        tmp_cash -= unit_price * deal_long[m, n, i]
+                total_cost = int(np.sum(open_prem * deal_long) * self.MULTIPLIER)
                 diff = total_cost + self.margin_ori_lvl - self.pool
             # 入金
             self.pool += diff
@@ -168,9 +173,9 @@ class Env:
         for m, n in product(range(2), range(2)):
             for i in np.where(cond[m, n])[0]:
                 self.position_queue[m][n][i].extend([open_prem[m, n, i]] * order[m, n, i])
-        self.position[cond] += order[cond]
+        self.position += deal_long
         
-        return total_cost
+        return deal_long, total_cost
     
     def __short(self, order, cond, open_prem, target_price):
         '''
@@ -178,7 +183,10 @@ class Env:
         put價外值： MAXIMUM((標的價格-履約價格)×契約乘數,0)
         保證金：權利金市值＋MAXIMUM (A值-價外值, B值)
         '''
-        volume = np.abs(order)
+        deal_short = order.copy()
+        deal_short[np.logical_not(cond)] = 0
+        volume = np.abs(deal_short)
+        
         margin = np.zeros(order.shape, dtype=int)
         for m, n in product(range(2), range(2)):
             for i in np.where(cond[m, n])[0]:    
@@ -187,7 +195,7 @@ class Env:
                         open_prem[m, n, i] * self.MULTIPLIER 
                         + max(self.margin_ori_a - otm_value,
                               self.margin_ori_b))
-        total_margin = np.sum(margin[cond] * volume[cond])
+        total_margin = np.sum(margin * volume)
         
         if self.pool < (total_margin + self.margin_ori_lvl):
             diff = total_margin + self.margin_ori_lvl - self.pool
@@ -200,23 +208,23 @@ class Env:
                             # 現金不足，計算最大可買張數
                             volume[m, n, i] = max_volume
                         tmp_cash -= margin[m, n, i] * volume[m, n, i]
-                order[cond] = volume[cond] * -1
-                total_margin = np.sum((margin * volume)[cond])
+                deal_short = volume * -1
+                total_margin = np.sum(margin * volume)
                 diff = total_margin + self.margin_ori_lvl - self.pool
             self.pool += diff
             self.cash -= diff
         
         # 收權利金
-        premium = int(np.sum(open_prem[cond] * volume[cond]) * self.MULTIPLIER)
+        premium = int(np.sum(open_prem * volume) * self.MULTIPLIER)
         self.pool += premium
         
         for m, n in product(range(2), range(2)):
             for i in np.where(cond[m, n])[0]:
                 self.position_queue[m][n][i].extend([open_prem[m, n, i]] * volume[m, n, i])
-        self.position[cond] += order[cond]
+        self.position += deal_short
         self.margin_ori_lvl += total_margin
     
-        return premium
+        return deal_short, premium
     
     def __close(self, order, cond, open_prem, target_price):
         deal_close = order.copy()
@@ -228,7 +236,7 @@ class Env:
         # 平倉量超出庫存
         cond_over_sell = cond & (volume > position_volume)
         deal_close[cond_over_sell] = self.position[cond_over_sell] * -1
-        volume[cond_over_sell] = np.abs(deal_close[cond_over_sell])
+        volume = np.abs(deal_close)
         
         # 平倉權利金
         close_point = open_prem * deal_close
@@ -249,7 +257,7 @@ class Env:
         # 調整保證金水位
         self.__update_margin_lvl(target_price)
         
-        return profit, deal_close
+        return deal_close, profit
     
     def __settlement(self, date_index):
         # 履約價
@@ -310,15 +318,15 @@ class Env:
         
         # 先平倉
         cond_close = (order * self.position) < 0
-        profit_close, deal_close = self.__close(order, 
+        deal_close, profit_close = self.__close(order, 
                                                 cond_close, 
                                                 self.open[date_index], 
                                                 self.taiex_open[date_index])
-        profit += profit_close
         order -= deal_close
+        profit += profit_close
         
         # 建倉 / 新倉
-        cond_new = (order * self.position) >= 0
+        cond_new = np.logical_not(cond_close)
         deal_new, cost, premium = self.__new(order, 
                                              cond_new, 
                                              self.open[date_index],
@@ -346,7 +354,9 @@ class Env:
             self.margin_call = self.margin_ori_lvl - self.pool
         
         self.cnt += 1
-        
+        if self.cnt == self.steps:
+            self.done = True
+            
         return (self.cash, 
                 self.pool,
                 cost,       # 權利金支出
@@ -375,15 +385,24 @@ if __name__ == '__main__':
     cash = 1e+6
     env = Env(option_folder)  
     env.reset(cash, start_date, period, 0)
-    
+    total_time = 0
     for i in range(period):
         print(f'[Step {i+1}]')
         print(action[i])
+        
+        
+        start_time = time.time()
         cash, pool, cost, premium, unrealized, profit, position, order, deal, margin_call = env.step(action[i])
+        end_time = time.time()
         
         print('Position:\n', position)
         print('Cost\tPremium\tProfit\tUnrl\tMargin Call')
         print(f'{cost}\t{premium}\t{profit}\t{unrealized}\t{margin_call}')
         print('Cash remains:', cash)
         print('Pool remains:', pool)
+        
+        step_time = (end_time - start_time) * 1000
+        total_time += step_time
+        print(f'[Time: {step_time}ms]')
         print()
+    print(f'[Total time: {total_time}ms]')
