@@ -25,7 +25,7 @@ class Env:
     
     # 讀取台股交易日
     def load_trading_day(self):
-        df = pd.read_excel('./stock_data/Y9999.xlsx')
+        df = pd.read_excel(self.option_folder + 'Y9999.xlsx')
         start_date_row = df.loc[df['年月日'] == self.start_date]
         assert len(start_date_row) > 0, '起始日無交易'
         start_date_index = start_date_row.index[0]
@@ -42,15 +42,15 @@ class Env:
         self.margin['end'] = pd.to_datetime(self.margin['end'])
         
     def load_settlement_price(self):
-        self.settlement_price = pd.read_csv('./futures_data/settlement.csv')
+        self.settlement_price = pd.read_csv(self.option_folder + 'settlement.csv')
         self.settlement_price['Date'] = pd.to_datetime(self.settlement_price['Date'])
         self.settlement_price = self.settlement_price.set_index('Date')
     
     def load_price(self):
-        txo_01_C = pd.read_csv('./txo_1_c.csv', index_col = 0)
-        txo_01_P = pd.read_csv('./txo_1_p.csv', index_col = 0)
-        txo_02_C = pd.read_csv('./txo_2_c.csv', index_col = 0)
-        txo_02_P = pd.read_csv('./txo_2_p.csv', index_col = 0)
+        txo_01_C = pd.read_csv(self.option_folder + 'txo_1_c.csv', index_col = 0)
+        txo_01_P = pd.read_csv(self.option_folder + 'txo_1_p.csv', index_col = 0)
+        txo_02_C = pd.read_csv(self.option_folder + 'txo_2_c.csv', index_col = 0)
+        txo_02_P = pd.read_csv(self.option_folder + 'txo_2_p.csv', index_col = 0)
         txo = [[txo_01_C, txo_01_P], [txo_02_C, txo_02_P]]
         
         self.sp = np.unique(np.concatenate(
