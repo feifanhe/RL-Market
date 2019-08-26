@@ -406,3 +406,4 @@ if __name__ == '__main__':
         print(f'[Time: {step_time}ms]')
         print()
     print(f'[Total time: {total_time}ms]')
+    time_list.append(total_time)
