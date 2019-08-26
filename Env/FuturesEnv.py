@@ -286,7 +286,7 @@ if __name__ == '__main__':
             [],
             [['TX01',-3],['TX02',-3]],
             ])
-    
+    total_time=0
     for i in range(steps):
         
         print(f'[step {i+1}]')
@@ -301,6 +301,9 @@ if __name__ == '__main__':
         print(profit, '\t', unrealized, '\t', margin_call)
         print('Cash remains:', cash)
         print('Pool remains:', pool)
-        print(f'[Time: {(end_time - start_time) * 1000}ms]')
+        step_time = (end_time - start_time) * 1000
+        total_time += step_time
+        print(f'[Time: {step_time}ms]')
         print()
-        
+    print(f'[Total time: {total_time}ms]')
+    time_list.append(total_time)
