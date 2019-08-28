@@ -117,6 +117,8 @@ class Env():
         
         self.stock_targets = stock_targets
         self.stock_targets_count = len(stock_targets)
+        self.stock_targets_idx = {j:i for i, j in enumerate(self.stock_targets)}
+        
         self.position = np.zeros(self.stock_targets_count)
         self.cost_queue = [deque([]) for _ in range(self.stock_targets_count)]
         
@@ -125,23 +127,25 @@ class Env():
         self.load_target_dividend()
         self.load_target_ex_right()
         
-        self.stock_targets_idx = {j:i for i, j in enumerate(self.stock_targets)}
-        
         self.done = False
         
         return (self.close[:self.history_steps], # 歷史收盤價
                 self.cash)
         
     def get_fee(self, price):
+        # support both integer and array input
         if not self.enable_fee:
             return 0
         
-        # 手續費 0.1425%
         fee = price * self.FEE_RATE
-        if fee < self.FEE_MIN:
-            return self.FEE_MIN
-        else:
-            return int(fee)
+        if type(fee) == int:
+            if fee < self.FEE_MIN:
+                return self.FEE_MIN
+            else:
+                return fee
+        else:    
+            fee[fee < self.FEE_MIN] = self.FEE_MIN
+            return fee.astype(int)
         
     # check if sell volume is not larger than position volume
     def __sell_check(self, order):
@@ -153,18 +157,21 @@ class Env():
         self.__sell_check(order)
         
         cond_sell = order < 0
+        order_deal = order.copy()
+        order_deal[np.logical_not(cond_sell)] = 0
         total_income = 0
         total_cost = 0
 
+        # determine total income and profit
         for i in np.where(cond_sell)[0]:
             # 賣出收入
-            income = int(open_price[i] * -1 * order[i] * 1000)
+            income = int(open_price[i] * -1 * order_deal[i] * 1000)
             income -= self.get_fee(income) + int(income * self.TAX_RATE)
             total_income += income
             
             # 買進成本
             cost = 0
-            for j in range(order[i], 0):
+            for j in range(order_deal[i], 0):
                 assert len(self.cost_queue[i]) > 0
                 cost += int(self.cost_queue[i].popleft() * 1000)
             cost += self.get_fee(cost)
@@ -173,51 +180,58 @@ class Env():
         profit = total_income - total_cost
         
         # 修正持有部位和平均成本
-        self.position[cond_sell] += order[cond_sell]
+        self.position += order_deal
         
         return total_income, profit
     
     # check if cash is enough to buy stocks
-    def __buy_check(self, order, open_price):
-        cond_buy = order > 0
-        # 檢查現金是否足夠
-        total_cost = np.sum(open_price[cond_buy] * order[cond_buy] * 1000)
+    def __buy_check(self, order_deal, cond, open_price):
+        total_cost = np.sum(open_price * order_deal * 1000)
         total_cost += self.get_fee(total_cost)
         if self.cash < total_cost:
-            # 修改 order[cond_buy]
+            # cash not enough, determine maximum volume to buy
             tmp_cash = self.cash
-            for i in np.where(cond_buy)[0]:
+            for i in np.where(cond)[0]:
+                # determine unit cost
                 cost = open_price[i] * 1000
                 cost += self.get_fee(cost)
-                if (tmp_cash / cost) < order[i]:
-                    # 現金不足，計算最大可買張數
-                    order[i] = int(tmp_cash / cost)
-                tmp_cash -= order[i] * cost
+                if (tmp_cash / cost) < order_deal[i]:
+                    # update order volume as much as possible
+                    order_deal[i] = int(tmp_cash / cost)
+                tmp_cash -= order_deal[i] * cost
     
     def __buy(self, order, open_price):
-        self.__buy_check(order, open_price)
-        
         cond_buy = order > 0
+        order_deal = order.copy()
+        order_deal[np.logical_not(cond_buy)] = 0
         total_cost = 0
+        
+        self.__buy_check(order_deal, cond_buy, open_price)
+        order[cond_buy] = order_deal[cond_buy]
         
         # append to cost queue
         for i in np.where(cond_buy)[0]:
-            self.cost_queue[i].extend([open_price[i]] * order[i])
-            cost = int(open_price[i]  * order[i] * 1000)
-            cost += self.get_fee(cost)
-            total_cost += cost
+            self.cost_queue[i].extend([open_price[i]] * order_deal[i])
             
-        self.position[cond_buy] += order[cond_buy]
+        cost = (open_price * order_deal * 1000).astype(int)
+        cost += self.get_fee(cost)
+        total_cost = np.sum(cost)
+        
+        self.position += order_deal
         return total_cost
     
-    def step(self, action):
+    def __parse_order(self, actions):
+        # 委託單
+        order = np.zeros(self.stock_targets_count, dtype = int)
+        for code, volume in actions:
+            order[self.stock_targets_idx[code]] = volume
+        return order
+    
+    def step(self, actions):
         date_index = self.history_steps + self.cnt
         
         # 委託單
-        order = np.zeros(self.stock_targets_count, dtype = int)
-        for code, volume in action:
-            order[self.stock_targets_idx[code]] = volume
-        # 成交單
+        order = self.__parse_order(actions)
         order_deal = order.copy()
 
         # sell
