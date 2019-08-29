@@ -31,7 +31,7 @@ class Env(StockEnv.Env):
             start_date,
             steps,
             history_steps,
-            targets)
+            stock_targets)
         self.repeat = repeat
         self.cash = np.array([cash] * self.repeat, dtype = int)
         
