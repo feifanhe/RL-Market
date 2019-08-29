@@ -78,7 +78,7 @@ class Env(StockEnv.Env):
     
     # check if cash is enough to buy stocks
     def __buy_check(self, order_deal, cond, open_price):
-        total_cost = np.zeros(self.position_shape, dtype = int)
+        total_cost = np.zeros(self.repeat, dtype = int)
         for i in range(self.repeat):
             total_cost[i] = np.sum(open_price * order_deal[i] * 1000).astype(int)
             total_cost[i] += self.get_fee(total_cost)
@@ -175,7 +175,7 @@ class Env(StockEnv.Env):
 if __name__ == '__main__':
     env = Env('./stock_data/')
     
-    repeat = 2
+    repeat = 5
     cash = int(1e+5)
     start_date = '2016/01/29'
     steps = 3
