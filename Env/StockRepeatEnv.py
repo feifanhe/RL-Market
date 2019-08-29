@@ -40,9 +40,14 @@ class Env(StockEnv.Env):
         self.position = np.zeros(self.position_shape)
         self.cost_queue = [[deque([]) for _ in range(self.stock_targets_count)] for _ in range(self.repeat)]
         
+        self.open = np.tile(self.open, (self.repeat, 1, 1))
+        self.close = np.tile(self.close, (self.repeat, 1, 1))
+        self.dividend = np.tile(self.dividend, (self.repeat, 1, 1))
+        self.ex_right = np.tile(self.ex_right, (self.repeat, 1, 1))
+        
         self.done = False
         
-        return (self.close[:self.history_steps], # 歷史收盤價
+        return (self.close[:, :self.history_steps], # 歷史收盤價
                 self.cash)
 
     def __sell(self, order, open_price):
@@ -51,15 +56,13 @@ class Env(StockEnv.Env):
         cond_sell = order < 0
         order_deal = order.copy()
         order_deal[np.logical_not(cond_sell)] = 0
-        total_income = np.zeros(self.repeat, dtype = int)
-        total_cost = np.zeros(self.repeat, dtype = int)
 
         # determine total income and profit
+        total_income = np.sum(open_price * -1 * order_deal * 1000, axis = 1).astype(int)
+        total_income -= self.get_fee(total_income) + (total_income * self.TAX_RATE).astype(int)
+        
+        total_cost = np.zeros(self.repeat, dtype = int)
         for i in range(self.repeat):
-            income = open_price * -1 * order_deal[i] * 1000
-            income -= self.get_fee(income) + income * self.TAX_RATE
-            total_income[i] = np.sum(income).astype(int)
-            
             for target in np.where(cond_sell[i])[0]:
                 # 買進成本
                 cost = 0
@@ -78,17 +81,15 @@ class Env(StockEnv.Env):
     
     # check if cash is enough to buy stocks
     def __buy_check(self, order_deal, cond, open_price):
-        total_cost = np.zeros(self.repeat, dtype = int)
-        for i in range(self.repeat):
-            total_cost[i] = np.sum(open_price * order_deal[i] * 1000).astype(int)
-            total_cost[i] += self.get_fee(total_cost)
+        total_cost = np.sum(open_price * order_deal * 1000, axis = 1).astype(int)
+        total_cost += self.get_fee(total_cost)
         
         cond_not_enough = self.cash < total_cost
         
         for i in np.where(cond_not_enough)[0]:
             tmp_cash = self.cash[i]
             for j in np.where(cond[i])[0]:
-                cost = open_price[j] * 1000
+                cost = open_price[i, j] * 1000
                 cost += self.get_fee(cost)
                 if (tmp_cash / cost) < order_deal[i, j]:
                     order_deal[i, j] = int(tmp_cash / cost)
@@ -106,11 +107,10 @@ class Env(StockEnv.Env):
         # append to cost queue
         for i in range(self.repeat):
             for j in np.where(cond_buy[i])[0]:
-                self.cost_queue[i][j].extend([open_price[j]] * order_deal[i, j])
+                self.cost_queue[i][j].extend([open_price[i, j]] * order_deal[i, j])
             
-            cost = (open_price * order_deal[i] * 1000).astype(int)
-            cost += self.get_fee(cost)
-            total_cost[i] = np.sum(cost)
+        total_cost = np.sum(open_price * order_deal * 1000, axis = 1).astype(int)
+        total_cost += self.get_fee(total_cost)
                 
         self.position += order_deal
         return total_cost
@@ -131,11 +131,11 @@ class Env(StockEnv.Env):
         order_deal = order.copy()
 
         # sell
-        income, profit = self.__sell(order_deal, self.open[date_index])
+        income, profit = self.__sell(order_deal, self.open[:, date_index])
         self.cash += income
         
         # buy
-        cost = self.__buy(order_deal, self.open[date_index])
+        cost = self.__buy(order_deal, self.open[:, date_index])
         self.cash -= cost
         
         # average cost
@@ -150,20 +150,20 @@ class Env(StockEnv.Env):
                 avg_cost[i, j] = sum(self.cost_queue[i][j]) / self.position[i, j]
             
         # 未實現損益
-        unrealized = np.sum((np.tile(self.close[date_index], (self.repeat, 1)) - avg_cost) * self.position * 1000, axis = 1)
+        unrealized = np.sum((self.close[:, date_index] - avg_cost) * self.position * 1000, axis = 1)
         
         # 計算配息
-        profit_dividend = np.sum(np.tile(self.dividend.iloc[date_index], (self.repeat, 1)) * self.position * 1000, axis = 1).astype(int)
+        profit_dividend = np.sum(self.dividend[:, date_index] * self.position * 1000, axis = 1).astype(int)
         profit += profit_dividend
         
         # 計算配股
-        self.position += self.position * np.tile(self.ex_right.iloc[date_index].values, (self.repeat, 1)) / 10
+        self.position += self.position * self.ex_right[:, date_index] / 10
         
         self.cnt += 1
         if self.cnt == self.steps:
             self.done = True
         
-        return (self.close[self.cnt:date_index + 1], # 歷史收盤價
+        return (self.close[:, self.cnt:date_index + 1], # 歷史收盤價
                 self.cash, # 剩餘現金
                 unrealized, # 未實現資產市值
                 profit, # 損益
