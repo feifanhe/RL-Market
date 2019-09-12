@@ -7,41 +7,31 @@ Created on Thu Aug  8 20:22:17 2019
 import pandas as pd
 import numpy as np
 from collections import deque
+import datetime
 import time
+import FuturesEnv
 
-class Env:
+class Env(FuturesEnv.Env):
     # Constants
     CONTRACT = ['TX01', 'TX02', 'MTX01', 'MTX02']
     CONTRACT_IDX = {j:i for i, j in enumerate(CONTRACT)}
     CONTRACT_COUNT = len(CONTRACT)
     CONTRACT_SIZE = np.array([200, 200, 50, 50], dtype = int)
+    MINUTES_PER_DAY = 300
     
     def __init__(self, futures_folder):
-        # Env parameter initial
-        self.futures_folder = futures_folder
-        self.done = True
-        
-    # 讀取台股交易日
-    def load_trading_day(self):
-        df = pd.read_excel('./stock_data/Y9999.xlsx')
-        start_date_row = df.loc[df['年月日'] == self.start_date]
-        assert len(start_date_row) > 0, '起始日無交易'
-        start_date_index = start_date_row.index[0]
-        assert start_date_index >= self.history_steps, '交易日資料不足'
-        head_date_index = start_date_index - self.history_steps
-        end_date_index = start_date_index + self.steps
-        self.trading_day = pd.DatetimeIndex(df['年月日'].iloc[head_date_index:end_date_index])
+        super().__init__(futures_folder)
         
     def load_price(self):
         # create table
-        open_price = pd.DataFrame(index=self.trading_day, columns=self.CONTRACT)
-        close_price = pd.DataFrame(index=self.trading_day, columns=self.CONTRACT)
+        open_price = pd.DataFrame(columns=self.CONTRACT)
+        close_price = pd.DataFrame(columns=self.CONTRACT)
         
         # TAIEX
-        tx01 = pd.read_csv(self.futures_folder + 'tx01_min.csv', index_col = 0)
-        tx02 = pd.read_csv(self.futures_folder + 'tx02_min.csv', index_col = 0)
-        mtx01 = pd.read_csv(self.futures_folder + 'mtx01_min.csv', index_col = 0)
-        mtx02 = pd.read_csv(self.futures_folder + 'mtx02_min.csv', index_col = 0)
+        tx01 = self.load_price_csv(self.futures_folder + 'tx01.csv')
+        tx02 = self.load_price_csv(self.futures_folder + 'tx02.csv')
+        mtx01 = self.load_price_csv(self.futures_folder + 'mtx01.csv')
+        mtx02 = self.load_price_csv(self.futures_folder + 'mtx02.csv') 
         
         open_price['TX01'] = tx01['Open']
         open_price['TX02'] = tx02['Open']
@@ -52,30 +42,54 @@ class Env:
         close_price['MTX01'] = mtx01['Close']
         close_price['MTX02'] = mtx02['Close']
         
+        self.trading_time = pd.DatetimeIndex(tx01['Time'])
         self.open = open_price.values
         self.close = close_price.values
-        
+       
+    def load_price_csv(self, filename):
+        df = pd.read_csv(filename, index_col = 0)
+        df['Time'] = pd.to_datetime(df['Time'])
+        start_index = df[df['Time'] == self.start_time].index[0]
+        head_index = start_index - self.history_steps
+        end_index = start_index + self.steps
+        df = df.iloc[head_index:end_index]
+        return df
+         
     def load_margin(self):
-        self.margin = pd.read_csv(self.futures_folder + 'margin.csv') #保證金
-        self.margin['start'] = pd.to_datetime(self.margin['start'])
-        self.margin['end'] = pd.to_datetime(self.margin['end'])
+        df = pd.read_csv(self.futures_folder + 'margin.csv') #保證金
+        df['start'] = pd.to_datetime(df['start'])
+        df['end'] = pd.to_datetime(df['end'])
+        
+        self.margin = pd.DataFrame(index = self.trading_time, columns = self.MARGIN_TYPE)
+        for i, row in df.iterrows():
+            for date in self.margin.loc[row['start']:row['end'] + pd.Timedelta('1 days')].index:
+                self.margin.loc[date, self.MARGIN_TYPE] = row[self.MARGIN_TYPE]
+        
+        self.margin_ori = pd.DataFrame(index = self.trading_time, columns = self.CONTRACT)
+        self.margin_maint = pd.DataFrame(index = self.trading_time, columns = self.CONTRACT)
+        
+        self.margin_ori[self.CONTRACT] = self.margin[['tx_ori', 'tx_ori', 'mtx_ori', 'mtx_ori']]
+        self.margin_ori = self.margin_ori.values
+        self.margin_maint[self.CONTRACT] = self.margin[['tx_maint', 'tx_maint', 'mtx_maint', 'mtx_maint']]
+        self.margin_maint = self.margin_maint.values
         
     def load_settlement_price(self):
         self.settlement_price = pd.read_csv(self.futures_folder + 'settlement.csv')
-        self.settlement_price['Date'] = pd.to_datetime(self.settlement_price['Date'])
+        self.settlement_price['Date'] = pd.to_datetime(self.settlement_price['Date']).dt.date
         self.settlement_price = self.settlement_price.set_index('Date')
-    
+        
     def reset(
             self, 
             cash,
-            start_date, 
+            start_time, 
             steps,
             history_steps):
-        self.start_date = start_date
+        self.start_time = start_time
+        self.start_date = pd.to_datetime(start_time).date().strftime('%Y-%m-%d')
         self.cash = cash
         self.steps = steps
         self.history_steps = history_steps
-
+        
         self.cnt = 0
         self.pool = 0
         self.position = np.zeros(self.CONTRACT_COUNT, dtype=int)
@@ -83,86 +97,16 @@ class Env:
         self.position_queue = [deque([]) for _ in range(self.CONTRACT_COUNT)]
         self.margin_call = 0
         
-        self.load_trading_day()
+        #self.load_trading_day()
         self.load_price()
         self.load_margin()
         self.load_settlement_price()
         
         self.done = False
-    
-    def __update_margin(self, date_index):
-        for index, row in self.margin.iterrows():
-            if row['start'] <= self.trading_day[date_index] <= row['end']:
-                self.margin_ori = np.array(
-                        [row['tx_original']] * 2 + [row['mtx_original']] * 2)
-                self.margin_maint = np.array(
-                        [row['tx_maintenance']] * 2 + [row['mtx_maintenance']] * 2)
-                return
-        
-    def __new(self, order, cond, open_price):
-        deal_new = order.copy()
-        deal_new[np.logical_not(cond)] = 0
-        volume = np.abs(deal_new)
-        margin = np.sum(self.margin_ori * volume)
-        
-        # evaluate the required original margin
-        if self.pool < (margin + self.margin_ori_level):
-            diff = margin + self.margin_ori_level - self.pool
-            if diff > self.cash:
-                tmp_cash = self.cash + self.pool - self.margin_ori_level
-                for i in np.where(cond)[0]:
-                    if (tmp_cash / self.margin_ori[i]) < volume[i]:
-                        # 現金不足，計算最大可買張數
-                        volume[i] = int(tmp_cash / self.margin_ori[i])
-                    tmp_cash -= self.margin_ori[i] * volume[i]
-                deal_new = np.sign(deal_new) * volume
-                margin = np.sum(self.margin_ori * volume)
-                diff = margin + self.margin_ori_level - self.pool
-            self.pool += diff
-            self.cash -= diff
-            
-        # append to position queue
-        for i in np.where(cond)[0]:
-            self.position_queue[i].extend([open_price[i]] * volume[i])
 
-        self.position += deal_new
-        self.margin_ori_level += margin
-        
-        return deal_new
-                    
-    def __close(self, order, cond, open_price):
-        deal_close = order.copy()
-        deal_close[np.logical_not(cond)] = 0
-        volume = np.abs(deal_close)
-        position_volume = np.abs(self.position)
-
-        # 平倉量超出庫存
-        cond_over_sell = cond & (volume > position_volume)
-        deal_close[cond_over_sell] = self.position[cond_over_sell] * -1
-        volume = np.abs(deal_close)
-        
-        # 平倉點位
-        close_point = open_price * deal_close
-        
-        # 庫存點位
-        position_point = np.zeros(self.CONTRACT_COUNT)
-        for i in np.where(cond)[0]:
-            for j in range(volume[i]):
-                assert len(self.position_queue[i]) > 0
-                position_point[i] += int(self.position_queue[i].popleft())
-        position_point *= np.sign(self.position)
-        
-        profit = np.sum((close_point + position_point) * -1 * self.CONTRACT_SIZE)
-        self.position += deal_close
-        
-        self.margin_ori_level -= np.sum(self.margin_ori * volume)
-        self.pool += profit
-        
-        return profit, deal_close
-        
-    def __settlement(self, date_index):
+    def __settlement(self, time_index):
         # 結算價
-        final_price = self.settlement_price.loc[self.trading_day[date_index], 'Price']
+        final_price = self.settlement_price.loc[self.trading_time[time_index].date(), 'Price']
         
         # 庫存點位
         position_point = np.zeros(self.CONTRACT_COUNT)
@@ -184,13 +128,12 @@ class Env:
         self.position_queue[3].clear()
         
         # 調整保證金水位
-        self.margin_ori_level = np.sum(self.margin_ori * np.abs(self.position))
+        self.margin_ori_level = np.sum(self.margin_ori[time_index] * np.abs(self.position))
         
         return profit
     
     def step(self, action):
-        date_index = self.cnt + self.history_steps
-        self.__update_margin(date_index)
+        time_index = self.cnt + self.history_steps
         profit = 0
         
         # 追繳保證金
@@ -199,7 +142,7 @@ class Env:
             if self.cash < self.margin_call:
                 # liquidate
                 cond_liq = self.position != 0
-                profit_liq, deal_liq = self.__close(self.position * -1, cond_liq, self.open[date_index])
+                profit_liq, deal_liq = self.__close(self.position * -1, cond_liq, self.open[time_index], self.margin_ori[time_index])
                 profit += profit_liq
             else:
                self.cash -= self.margin_call
@@ -214,19 +157,20 @@ class Env:
         
         # 先平倉
         cond_close = (order * self.position) < 0
-        profit_close, deal_close = self.__close(order, cond_close, self.open[date_index])
+        profit_close, deal_close = self.__close(order, cond_close, self.open[time_index], self.margin_ori[time_index])
         profit += profit_close
         order -= deal_close
         
         # 建倉 / 新倉
         cond_new = (order * self.position) >= 0
-        deal_new = self.__new(order, cond_new, self.open[date_index])
+        deal_new = self.__new(order, cond_new, self.open[time_index], self.margin_ori[time_index])
         
         order_deal = deal_liq + deal_close + deal_new
         
         # 結算
-        if self.trading_day[date_index] in self.settlement_price.index:
-            profit += self.__settlement(date_index)
+        if (self.trading_time[time_index].time() == datetime.time(13, 44) and 
+            self.trading_time[time_index].date() in self.settlement_price.index):
+            profit += self.__settlement(time_index)
             
         # 庫存點位
         position_point = np.zeros(self.CONTRACT_COUNT)
@@ -239,10 +183,10 @@ class Env:
             avg_cost = np.nan_to_num(position_point / self.position)
         
         # 未實現損益
-        unrealized = np.sum((self.close[date_index] * self.position - position_point) * self.CONTRACT_SIZE)
+        unrealized = np.sum((self.close[time_index] * self.position - position_point) * self.CONTRACT_SIZE)
         
         # 檢查保證金水位
-        margin_maint_level = np.sum(self.margin_maint * np.abs(self.position))
+        margin_maint_level = np.sum(self.margin_maint[time_index] * np.abs(self.position))
         if self.pool + unrealized < margin_maint_level:
             self.margin_call = self.margin_ori_level - (self.pool + unrealized)
         
@@ -259,12 +203,12 @@ if __name__ == '__main__':
     env = Env(futures_folder)
     
     cash = int(1e+6)
-    start_date = '2016/01/19'
+    start_time = '2016-01-19 09:00:00'
     steps = 5
     history_steps = 10
     
     env.reset(cash,
-              start_date, 
+              start_time, 
               steps,
               history_steps)
     
@@ -279,9 +223,9 @@ if __name__ == '__main__':
     for i in range(steps):
         
         print(f'[step {i+1}]')
-        start_time = time.time()
+        start_timer = time.time()
         cash, pool, unrealized, profit, position, avg_cost, order, deal, margin_call = env.step(action[i])
-        end_time = time.time()
+        end_timer = time.time()
         print('Order:\t', order)
         print('Deal:\t', deal)
         print('Position:\t', position)
@@ -290,6 +234,6 @@ if __name__ == '__main__':
         print(profit, '\t', unrealized, '\t', margin_call)
         print('Cash remains:', cash)
         print('Pool remains:', pool)
-        print(f'[Time: {(end_time - start_time) * 1000}ms]')
+        print(f'[Time: {(end_timer - start_timer) * 1000}ms]')
         print()
         
