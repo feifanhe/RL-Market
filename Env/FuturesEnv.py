@@ -84,6 +84,7 @@ class Env:
         self.margin_ori = self.margin_ori.values
         self.margin_maint[self.CONTRACT] = self.margin[['tx_maint', 'tx_maint', 'mtx_maint', 'mtx_maint']]
         self.margin_maint = self.margin_maint.values
+        
     def load_settlement_price(self):
         self.settlement_price = pd.read_csv(self.futures_folder + 'settlement.csv')
         self.settlement_price['Date'] = pd.to_datetime(self.settlement_price['Date'])
@@ -216,9 +217,9 @@ class Env:
                 profit_liq, deal_liq = self.__close(self.position * -1, cond_liq, self.open[date_index], self.margin_ori[date_index])
                 profit += profit_liq
             else:
-               self.cash -= self.margin_call
-               self.pool += self.margin_call
-               self.margin_call = 0
+                self.cash -= self.margin_call
+                self.pool += self.margin_call
+            self.margin_call = 0
         
         # 委託單
         order = np.zeros(self.CONTRACT_COUNT, dtype = int)
@@ -247,6 +248,8 @@ class Env:
         for i in range(self.CONTRACT_COUNT):
             position_point[i] = sum(self.position_queue[i])
         position_point *= np.sign(self.position)
+        
+        
         
         # average cost
         with np.errstate(divide='ignore', invalid='ignore'):

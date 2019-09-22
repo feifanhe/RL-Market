@@ -221,7 +221,6 @@ if __name__ == '__main__':
             ])
     
     for i in range(steps):
-        
         print(f'[step {i+1}]')
         start_timer = time.time()
         cash, pool, unrealized, profit, position, avg_cost, order, deal, margin_call = env.step(action[i])
