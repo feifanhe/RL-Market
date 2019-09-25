@@ -60,6 +60,8 @@ class Env:
         self.settlement_price = self.settlement_price.set_index('Date')
     
     def load_price(self):
+        global txo
+        
         txo_01_C = pd.read_csv(self.option_folder + 'txo_1_c.csv', index_col = 0)
         txo_01_P = pd.read_csv(self.option_folder + 'txo_1_p.csv', index_col = 0)
         txo_02_C = pd.read_csv(self.option_folder + 'txo_2_c.csv', index_col = 0)
@@ -386,7 +388,7 @@ class Env:
 if __name__ == '__main__':
     option_folder = './option_data/'
     
-    start_date = '2016/01/19'
+    start_date = '2016-01-19'
     period = 4
     action = list([
             [['TXO01', 'C', 7900, 1], ['TXO02', 'C', 7900, -2], ['TXO01', 'P', 7700, -1]],
