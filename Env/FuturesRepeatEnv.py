@@ -103,9 +103,8 @@ class Env(FuturesEnv.Env):
             deal_new[i] = np.sign(deal_new[i]) * volume[i]
             margin[i] = np.sum(margin_ori[i] * volume[i])
         
-        cond_pool_not_enough = self.pool < (margin + self.margin_ori_level)
         diff = margin + self.margin_ori_level - self.pool
-        diff[np.logical_not(cond_pool_not_enough)] = 0
+        diff[diff <= 0] = 0
         self.pool = self.pool + diff
         self.cash = self.cash - diff
         
@@ -153,20 +152,21 @@ class Env(FuturesEnv.Env):
         profit = np.zeros(self.repeat, dtype = int)
         
         # 強制平倉
-        deal_liq = np.zeros(self.position_shape, dtype = int)
-        cond_liq = self.cash < self.margin_call
+        cond_cash_not_enough = self.cash < self.margin_call
+        cond_liq = self.position != 0
+        cond_liq[np.logical_not(cond_cash_not_enough)] = False
         profit_liq, deal_liq = self.__close(
                 self.position * -1,
                 cond_liq,
                 self.open[:, date_index],
                 self.margin_ori[:, date_index])
-        self.margin_call[cond_liq] = 0
+        self.margin_call[cond_cash_not_enough] = 0
         
         # 追繳保證金
         self.cash -= self.margin_call
         self.pool += self.margin_call
         
-        self.margin_call = np.zeros(self.repeat, dtype = int)
+        self.margin_call[:] = 0
         
         # 委託單
         order = self.__parse_order(actions)

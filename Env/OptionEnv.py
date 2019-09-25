@@ -16,10 +16,11 @@ class Env:
     TAX_RATE_SETT = 0.00002 #交易稅(結算)
     FEE = 15 #手續費
     MULTIPLIER = 50
-    NEAR_MONTH_IDX = {'TXO01': 0, 'TXO02': 1}
+    CONTRACT_IDX = {'TXO01': 0, 'TXO02': 1}
     CP_IDX = {'C': 0, 'P': 1}
-           
-        
+    MARGIN_TYPE = ['ori_a', 'maint_a', 'sett_a', 'ori_b', 'maint_b', 'sett_b']
+    MARGIN_TYPE_IDX = {'ori_a': 0, 'maint_a': 1, 'sett_a': 2, 'ori_b': 3, 'maint_b': 4, 'sett_b': 5}
+    
     def __init__(self, option_folder):
         # Env parameter initial
         self.option_folder = option_folder
@@ -39,9 +40,19 @@ class Env:
         self.trading_day = pd.DatetimeIndex(df['年月日'].iloc[head_date_index:end_date_index])
         
     def load_margin(self):
-        self.margin = pd.read_csv(self.option_folder + 'margin.csv') #保證金
-        self.margin['start'] = pd.to_datetime(self.margin['start'])
-        self.margin['end'] = pd.to_datetime(self.margin['end'])
+#        self.margin = pd.read_csv(self.option_folder + 'margin.csv') #保證金
+#        self.margin['start'] = pd.to_datetime(self.margin['start'])
+#        self.margin['end'] = pd.to_datetime(self.margin['end'])
+        
+        df = pd.read_csv(self.option_folder + 'margin.csv') #保證金
+        df['start'] = pd.to_datetime(df['start'])
+        df['end'] = pd.to_datetime(df['end'])
+        
+        self.margin = pd.DataFrame(index = self.trading_day, columns = self.MARGIN_TYPE)
+        for i, row in df.iterrows():
+            for date in self.margin.loc[row['start']:row['end'] + pd.Timedelta('1 days')].index:
+                self.margin.loc[date, self.MARGIN_TYPE] = row[self.MARGIN_TYPE]
+        self.margin = self.margin.values
         
     def load_settlement_price(self):
         self.settlement_price = pd.read_csv(self.option_folder + 'settlement.csv')
@@ -110,12 +121,10 @@ class Env:
         self.done = False
         
     def __update_margin(self, date_index):
-        for index, row in self.margin.iterrows():
-            if row['start'] <= self.trading_day[date_index] <= row['end']:
-                self.margin_ori_a = row['ori_a']
-                self.margin_maint_a = row['maint_a']
-                self.margin_ori_b = row['ori_b']
-                self.margin_maint_b = row['maint_b']
+        self.margin_ori_a = self.margin[date_index, self.MARGIN_TYPE_IDX['ori_a']]
+        self.margin_maint_a = self.margin[date_index, self.MARGIN_TYPE_IDX['maint_a']]
+        self.margin_ori_b = self.margin[date_index, self.MARGIN_TYPE_IDX['ori_b']]
+        self.margin_maint_b = self.margin[date_index, self.MARGIN_TYPE_IDX['maint_b']]
                 
     def __update_margin_lvl(self, target_price):
         position_volume = np.abs(self.position)
@@ -301,7 +310,11 @@ class Env:
             if self.cash < self.margin_call:
                 # liquidate
                 cond_liq = self.position < 0
-                profit_liq, deal_liq = self.__close(self.position * -1, cond_liq, self.open[date_index], self.taiex_open[date_index])
+                profit_liq, deal_liq = self.__close(
+                        self.position * -1,
+                        cond_liq,
+                        self.open[date_index],
+                        self.taiex_open[date_index])
                 profit += profit_liq
             else:
                self.cash -= self.margin_call
@@ -311,7 +324,7 @@ class Env:
         # 委託
         order = np.zeros(self.position.shape, dtype=int)
         for near_month, cp, sp, volume in action:
-            order[self.NEAR_MONTH_IDX[near_month], 
+            order[self.CONTRACT_IDX[near_month], 
                   self.CP_IDX[cp],
                   self.sp_idx[sp]] = volume
         order_original = order.copy()
@@ -406,4 +419,3 @@ if __name__ == '__main__':
         print(f'[Time: {step_time}ms]')
         print()
     print(f'[Total time: {total_time}ms]')
-    time_list.append(total_time)
